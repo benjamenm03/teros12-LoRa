@@ -15,8 +15,13 @@
 
 #include <LowPower.h>
 
-const unsigned long WAKE_PERIOD_MS = 8000UL;   // AVR watchdog max ≈ 8 s
+// Sleep length between radio check-ins.  The watchdog only supports up to
+// 8 seconds so we accumulate the delay using multiple sleeps.
+// One minute between wake ups keeps the radio mostly off and drastically
+// reduces average consumption.
+const unsigned long WAKE_PERIOD_MS = 60000UL;
 unsigned long lastWake = 0;
+const unsigned long LISTEN_WINDOW_MS = 20UL;   // time to listen for requests
 
 // ─── Radio pins ─────────────────────────────
 #define RFM95_CS   10
@@ -28,8 +33,10 @@ unsigned long lastWake = 0;
 #define TX_POWER    13     // dBm  (<14 dBm on bench)
 
 // ─── Node addresses ─────────────────────────
-#define NODE_BASE    1     // USB receiver
-#define NODE_FIELD   2     // This probe node
+#define NODE_BASE    1     // Receiver/gatherer node
+#ifndef NODE_ID
+#define NODE_ID      2     // default address for this probe
+#endif
 
 // ─── SDI-12 wiring ──────────────────────────
 const byte SDI_PIN = 3;         // white wire via 510 Ω
@@ -43,7 +50,7 @@ const float DIVIDER_GAIN  = 2.0;   // 100 kΩ + 100 kΩ for example
 
 // ─── Radio objects ──────────────────────────
 RH_RF95 rf95(RFM95_CS, RFM95_INT);
-RHReliableDatagram manager(rf95, NODE_FIELD);
+RHReliableDatagram manager(rf95, NODE_ID);
 
 /* ---------------- read one CR-LF line -------------------------- */
 bool readLine(String &out, uint16_t tout = 4000)
@@ -119,6 +126,7 @@ void setup()
   }
   rf95.setFrequency(RF95_FREQ);
   rf95.setTxPower(TX_POWER, false);
+  rf95.sleep();
 
   Serial.println(F("Probe node ready"));
 }
@@ -126,13 +134,14 @@ void setup()
 /* ---------------- main loop ------------------------------------ */
 void loop()
 {
-  /* —— stay awake just long enough to service one packet —— */
+  /* —— radio listening window —— */
+  rf95.setModeRx();
   uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
   uint8_t len = sizeof(buf);
   uint8_t from;
 
   unsigned long t0 = millis();
-  while (millis() - t0 < 15) {                 // ~15 ms receive window
+  while (millis() - t0 < LISTEN_WINDOW_MS) {
     if (manager.recvfromAck(buf, &len, &from)) {
       if (len == 5 && memcmp(buf, "TEROS", 5) == 0) {
         float  vbat = readBattery();
@@ -144,8 +153,9 @@ void loop()
       }
     }
   }
+  rf95.sleep();
 
-  /* —— go to sleep until next 8-s watchdog tick —— */
+  /* —— sleep until next wake period —— */
   while (millis() - lastWake < WAKE_PERIOD_MS) {
     LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
     lastWake += 8000UL;                        // keep drift small
