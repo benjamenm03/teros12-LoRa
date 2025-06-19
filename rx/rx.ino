@@ -3,7 +3,7 @@
   --------------------------------
   Listens for packets from up to four TX nodes and logs the values to an SD
   card in CSV format.  Hardware: Arduino Nano, Adafruit RFM95 and a
-  microSD adapter running on a bit-banged SPI bus using the SdFat library.
+  microSD adapter sharing the hardware SPI bus with the SdFat library.
 */
 
 #include <SPI.h>
@@ -24,14 +24,13 @@
 // ----- Node addresses -----
 #define NODE_BASE   1    // this station
 
-// ----- SD card soft SPI pins -----
+// ----- SD card on shared hardware SPI bus -----
 #define SD_CS    4
-#define SD_MOSI  7
-#define SD_MISO  6
-#define SD_SCK   5
 
-SoftSpiDriver<SD_MISO, SD_MOSI, SD_SCK> softSpi;
-#define SD_CONFIG SdSpiConfig(SD_CS, SHARED_SPI, SD_SCK_MHZ(0), &softSpi)
+// Share the hardware SPI bus with the LoRa module.  The SdFat helper
+// takes care of asserting the CS line while transactions are active.
+// Keep the speed modest for reliability.
+#define SD_CONFIG SdSpiConfig(SD_CS, SHARED_SPI, SD_SCK_MHZ(10))
 
 SdFat sd;
 File logFile;
