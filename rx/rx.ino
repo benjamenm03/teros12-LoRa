@@ -3,13 +3,13 @@
   --------------------------------
   Listens for packets from up to four TX nodes and logs the values to an SD
   card in CSV format.  Hardware: Arduino Nano, Adafruit RFM95 and a
-  microSD adapter running on a bit-banged SPI bus.
+  microSD adapter running on a bit-banged SPI bus using the SdFat library.
 */
 
 #include <SPI.h>
 #include <RH_RF95.h>
 #include <RHReliableDatagram.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <LowPower.h>
 
 // ----- LoRa pins -----
@@ -30,6 +30,10 @@
 #define SD_MISO  6
 #define SD_SCK   5
 
+SoftSpiDriver<SD_MISO, SD_MOSI, SD_SCK> softSpi;
+#define SD_CONFIG SdSpiConfig(SD_CS, SHARED_SPI, SD_SCK_MHZ(0), &softSpi)
+
+SdFat sd;
 File logFile;
 const char *LOG_NAME = "teros.csv";
 
@@ -41,19 +45,12 @@ void openLog()
 {
   pinMode(SD_CS, OUTPUT);
 
-#if defined(ARDUINO_ARCH_AVR)
-  // AVR SPI pins are fixed; use default hardware pins
-  SPI.begin();
-#else
-  // Other boards allow specifying SPI pins
-  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-#endif
-  
-  if (!SD.begin(SD_CS)) {
+  if (!sd.begin(SD_CONFIG)) {
     Serial.println(F("SD init fail"));
     while (true);
   }
-  logFile = SD.open(LOG_NAME, FILE_WRITE);
+
+  logFile = sd.open(LOG_NAME, FILE_WRITE);
   if (!logFile) {
     Serial.println(F("Log open fail"));
     while (true);
