@@ -29,7 +29,11 @@
 #define SD_MOSI  7
 #define SD_MISO  6
 #define SD_SCK   5
-SdFatSoftSpi<SD_MISO, SD_MOSI, SD_SCK> sd;
+// SdFat v2.x no longer provides SdFatSoftSpi.  Use SoftSpiDriver and
+// SdSpiConfig for software SPI.
+SoftSpiDriver<SD_MISO, SD_MOSI, SD_SCK> softSpi;
+#define SD_CONFIG SdSpiConfig(SD_CS, DEDICATED_SPI, SD_SCK_MHZ(8), &softSpi)
+SdFat sd;
 File logFile;
 const char *LOG_NAME = "teros.csv";
 
@@ -39,7 +43,7 @@ RHReliableDatagram manager(rf95, NODE_BASE);
 
 void openLog()
 {
-  if (!sd.begin(SD_CS, SD_SCK_MHZ(8))) {
+  if (!sd.begin(SD_CONFIG)) {
     Serial.println(F("SD init fail"));
     while (true);
   }
