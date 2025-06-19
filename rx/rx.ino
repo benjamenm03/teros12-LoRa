@@ -43,6 +43,7 @@ RHReliableDatagram manager(rf95, NODE_BASE);
 void openLog()
 {
   pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);  // deselect SD card while initializing
 
   if (!sd.begin(SD_CONFIG)) {
     Serial.println(F("SD init fail"));
@@ -59,6 +60,8 @@ void openLog()
 void setup()
 {
   Serial.begin(115200);
+  pinMode(SD_CS, OUTPUT);        // ensure SD card deselected during radio init
+  digitalWrite(SD_CS, HIGH);
   pinMode(RFM95_RST, OUTPUT);
   digitalWrite(RFM95_RST, HIGH); delay(10);
   digitalWrite(RFM95_RST, LOW);  delay(10);
