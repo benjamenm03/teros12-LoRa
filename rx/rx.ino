@@ -40,7 +40,15 @@ RHReliableDatagram manager(rf95, NODE_BASE);
 void openLog()
 {
   pinMode(SD_CS, OUTPUT);
+
+#if defined(ARDUINO_ARCH_AVR)
+  // AVR SPI pins are fixed; use default hardware pins
+  SPI.begin();
+#else
+  // Other boards allow specifying SPI pins
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+#endif
+  
   if (!SD.begin(SD_CS)) {
     Serial.println(F("SD init fail"));
     while (true);
