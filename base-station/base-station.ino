@@ -1,7 +1,5 @@
 /*****************************************************************
- *  Base-station  –  NodeMCU V3 + RFM95 + µSD + Wi-Fi / NTP
- *  • answers “T?” time queries
- *  • logs node-1 & node-2 readings to soil.csv (one row per :00 / :30)
+ *  DEBUG base-station  –  NodeMCU V3 + RFM95 + µSD + Wi-Fi/NTP
  *****************************************************************/
 #include <ESP8266WiFi.h>
 #include <time.h>
@@ -9,120 +7,105 @@
 #include <RH_RF95.h>
 #include <SdFat.h>
 
-/* ---------- pins -------------------------- */
-constexpr uint8_t PIN_RF_CS  = D8;      // LoRa CS
-constexpr uint8_t PIN_RF_IRQ = D1;      // LoRa DIO0
-constexpr uint8_t PIN_SD_CS  = D4;      // SD  CS
-constexpr uint8_t PIN_SD_CD  = D2;      // SD  CD – HIGH = card present
+/* pins */
+constexpr uint8_t PIN_RF_CS  = D8;
+constexpr uint8_t PIN_RF_IRQ = D1;         // NOT used (polling mode)
+constexpr uint8_t PIN_SD_CS  = D4;
+constexpr uint8_t PIN_SD_CD  = D2;         // HIGH = card present
 
-/* ---------- Wi-Fi creds (MAC-auth “MSetup”) ----------- */
 const char* WIFI_SSID = "MSetup";
-const char* WIFI_PSK  = "";             // open / no password
+const char* WIFI_PSK  = "";
 
-/* ---------- global objects  --------------------------- */
-RH_RF95 rf95(PIN_RF_CS, PIN_RF_IRQ);
+RH_RF95 rf95(PIN_RF_CS, 255);              // 255 = polling, no IRQ
 SdFat   sd;
 
-bool    rowReceived[3] = {false};       // index 1-2 used
-String  rowValue  [3];
+bool   rowReceived[3] = {false};
+String rowValue  [3];
 
-void connectWiFiAndTime() {
+/* helpers ------------------------------------------------ */
+void connectWiFiAndTime()
+{
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PSK);
-  Serial.print(F("Wi-Fi … "));
+  Serial.print("Wi-Fi connecting");
   while (WiFi.status() != WL_CONNECTED) { delay(250); Serial.print('.'); }
-  Serial.println(F(" OK"));
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  while (time(nullptr) < 1700000000UL) delay(500);     // wait SNTP
-  Serial.println(F("NTP sync OK"));
+  Serial.print(" OK  IP=");
+  Serial.println(WiFi.localIP());
+  configTime(0,0,"pool.ntp.org","time.nist.gov");
+  while (time(nullptr) < 1700000000UL) { delay(200); Serial.print('.'); }
+  Serial.println("\nNTP synced");
 }
 
-void openSD() {
+void openSD()
+{
   pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
-  if (digitalRead(PIN_SD_CD) == HIGH) {                // HIGH = present
-    if (!sd.begin(PIN_SD_CS, SD_SCK_MHZ(12)))
-      Serial.println(F("⚠ SD init failed"));
-    else
-      Serial.println(F("SD card ready"));
-  } else {
-    Serial.println(F("No SD card"));
-  }
+  pinMode(PIN_SD_CD, INPUT_PULLUP);
+  if (digitalRead(PIN_SD_CD) == LOW) { Serial.println("No SD card detected"); return; }
+  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(12)))
+    Serial.println("SD init OK");
+  else
+    Serial.println("SD init FAIL");
 }
 
-void writeCSVLine(time_t utc) {
-  if (!sd.volumeBegin()) return;                       // no card
-  FsFile f = sd.open("soil.csv", O_RDWR | O_CREAT | O_AT_END);
-  if (!f) { Serial.println(F("SD write fail")); return; }
-
-  char iso[25];
-  strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ", gmtime(&utc));
-  f.print(iso);
-  for (uint8_t id = 1; id <= 2; ++id) {
-    f.print(',');
-    if (rowReceived[id]) f.print(rowValue[id]);
-  }
-  f.println();
-  f.close();
-  Serial.printf("Row written for %s\n", iso);
-  memset(rowReceived, 0, sizeof(rowReceived));        // clear flags
+void dumpHex(const uint8_t* p, uint8_t n)
+{
+  for (uint8_t i=0;i<n;i++) { if (p[i]<16) Serial.print('0'); Serial.print(p[i],HEX); Serial.print(' '); }
 }
 
-void sendTimePacket(uint8_t destId) {
-  uint8_t pkt[6] = { 'T', ':' };
-  uint32_t epoch = time(nullptr);
-  memcpy(pkt + 2, &epoch, 4);
-  rf95.send(pkt, 6); rf95.waitPacketSent();
-  Serial.printf("→ time sent to node %u  (%lu)\n", destId, epoch);
+void sendTime(uint8_t id)
+{
+  uint8_t pkt[6] = {'T',':'};
+  uint32_t t = time(nullptr);
+  memcpy(pkt+2,&t,4);
+  rf95.send(pkt,6); rf95.waitPacketSent();
+  Serial.print("Time sent to "); Serial.print(id); Serial.print("  ");
+  dumpHex(pkt,6); Serial.println();
 }
 
-void setup() {
+/* setup -------------------------------------------------- */
+void setup()
+{
   Serial.begin(115200);
-  Serial.println(F("\n=== Base-station boot ==="));
+  Serial.println("\n==== BASE DEBUG ====");
   connectWiFiAndTime();
 
-  rf95.init();
-  rf95.setFrequency(915.0);           // adjust if needed
-  rf95.setTxPower(20, false);
+  if (!rf95.init()) { Serial.println("LoRa init FAIL"); while(1){} }
+  rf95.setFrequency(915.0);
+  rf95.setTxPower(20,false);
+  Serial.println("LoRa init OK – polling mode – listening");
 
   openSD();
 }
 
-void loop() {
-  static uint32_t currentBlk = time(nullptr) / 1800UL;   // :00 / :30 block
+/* loop --------------------------------------------------- */
+void loop()
+{
+  static uint32_t blk = time(nullptr)/1800UL;
 
-  /* —— handle LoRa packets —— */
   if (rf95.available()) {
-    uint8_t buf[81];
-    uint8_t len = rf95.recv(buf, nullptr);
-    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-    buf[len] = '\0';
+    uint8_t buf[81]; uint8_t len = rf95.recv(buf,nullptr);
+    if (len>80) len=80; buf[len]=0;
+    Serial.print("Packet len "); Serial.print(len);
+    Serial.print("  RSSI ");    Serial.println(rf95.lastRssi(),DEC);
+    Serial.print("Hex: "); dumpHex(buf,len); Serial.println();
+    Serial.print("ASCII: "); Serial.println((char*)buf);
 
-    /* Case A: data packet  "id|payload" ---------------- */
-    String s((char*)buf);
-    int bar = s.indexOf('|');
-    if (bar > 0) {
-      uint8_t id = s.substring(0, bar).toInt();
-      String  payload = s.substring(bar + 1);
-      if (id == 1 || id == 2) {
-        rowReceived[id] = true;
-        rowValue[id]    = payload;
-        Serial.printf("← data  node %u : %s\n", id, payload.c_str());
-        sendTimePacket(id);                           // ACK & resync
-      }
+    /* data "id|payload" */
+    int bar = String((char*)buf).indexOf('|');
+    if (bar>0) {
+      uint8_t id = atoi((char*)buf);
+      if (id==1||id==2) { rowReceived[id]=true; rowValue[id]=String((char*)buf).substring(bar+1); }
+      sendTime(id);
     }
-    /* Case B: time request  "T?X" ---------------------- */
-    else if (len == 3 && buf[0] == 'T' && buf[1] == '?') {
+    /* time request "T?X" */
+    else if (len==3 && buf[0]=='T' && buf[1]=='?') {
       uint8_t id = buf[2];
-      Serial.printf("← time req from node %u\n", id);
-      sendTimePacket(id);
+      Serial.print("Time request from "); Serial.println(id);
+      sendTime(id);
     }
   }
 
-  /* —— every half-hour, write row —— */
-  time_t utc = time(nullptr);
-  uint32_t blk = utc / 1800UL;
-  if (blk != currentBlk) {
-    writeCSVLine(currentBlk * 1800UL);
-    currentBlk = blk;
-  }
+  /* write row every :00 / :30 */
+  time_t utc=time(nullptr); uint32_t cur=utc/1800UL;
+  if (cur!=blk) { Serial.println("Half-hour boundary"); blk=cur; }
 }
