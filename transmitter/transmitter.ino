@@ -1,95 +1,137 @@
 /*****************************************************************
- *  LoRa TX node  ·  NodeMCU V3 + RFM95 + TEROS12  (short cable)
+ *  TX node  ·  NodeMCU V3 + RFM95 + TEROS-12
  *****************************************************************/
-#define NODE_ID          1             // set 1 or 2 before each build
-#define LORA_FREQ_MHZ  915.0
-#define SDI12_PIN       D2             // GPIO4
-#define TX_OFFSET_S   (15 + NODE_ID * 15)   // 1→30 s, 2→45 s
-#define SLEEP_MARGIN_S  2
+#define NODE_ID             1       // ← set 1 or 2 before each upload
+#define LORA_FREQ_MHZ     915.0
+#define SDI12_PIN          D2       // orange wire via level-shifter, 4 k7→3V3
+#define TX_OFFSET_S   (15 + NODE_ID * 15)   // node-1 →30 s, node-2 →45 s
+#define SLEEP_MARGIN_S     2
+
+extern "C" {                      // for RTC memory helpers
+  #include "user_interface.h"
+}
 
 #include <SDI12.h>
 #include <RH_RF95.h>
 #include <SPI.h>
+#include <ESP8266WiFi.h>          // only so we can turn Wi-Fi off
 
+/* pins */
 constexpr uint8_t PIN_RF_CS  = D8;
 constexpr uint8_t PIN_RF_IRQ = D1;
 
+/* objects */
 RH_RF95 rf95(PIN_RF_CS, PIN_RF_IRQ);
 SDI12   sdi(SDI12_PIN);
 
-/* ---------- RTC keep-alive across deep sleep ----------- */
+/* RTC backup */
 struct RTCData { uint32_t utc0; uint32_t ms0; } rtc;
-void saveRTC() { system_rtc_mem_write(64, &rtc, sizeof(rtc)); }
-bool loadRTC() { return system_rtc_mem_read(64, &rtc, sizeof(rtc)); }
+void rtcSave() { ESP.rtcUserMemoryWrite(0, (uint32_t*)&rtc, sizeof(rtc)); }
+bool rtcLoad() { return ESP.rtcUserMemoryRead (0, (uint32_t*)&rtc, sizeof(rtc)); }
 uint32_t nowUTC() { return rtc.utc0 + (millis() - rtc.ms0) / 1000; }
-void syncUTC(uint32_t epoch) { rtc.utc0 = epoch; rtc.ms0 = millis(); saveRTC(); }
+void syncUTC(uint32_t epoch) { rtc.utc0 = epoch; rtc.ms0 = millis(); rtcSave(); }
 
-void deepSleepSec(uint32_t sec) {
-  Serial.printf("  • deep-sleep %us\n\n", sec);
-  ESP.deepSleep((uint64_t)sec * 1'000'000ULL, WAKE_RF_DEFAULT);
+void deepSleepSec(uint32_t s)
+{
+  Serial.print("Deep-sleep ");
+  Serial.print(s);
+  Serial.println(" s");
+  ESP.deepSleep((uint64_t)s * 1000000ULL, WAKE_RF_DEFAULT);
 }
 
-/* ---------- SETUP (runs each wake) --------------------- */
-void setup() {
+/* ---------- SETUP -------------------------------------- */
+void setup()
+{
   Serial.begin(115200); delay(80);
-  Serial.printf("\n== TX node %u boot ==\n", NODE_ID);
+  Serial.print("\nTX node ");
+  Serial.print(NODE_ID);
+  Serial.println(" boot");
 
-  loadRTC();               // may be garbage first power-on
-  rf95.init(); rf95.setFrequency(LORA_FREQ_MHZ); rf95.setTxPower(20,false);
+  WiFi.forceSleepBegin();          // Wi-Fi radio OFF
+
+  rtcLoad();                       // may fail first power-up
+  if (!rf95.init()) { Serial.println("LoRa init FAIL"); while (1) delay(1000); }
+  rf95.setFrequency(LORA_FREQ_MHZ);
+  rf95.setTxPower(20, false);
   sdi.begin();
 
-  /* --- ask base for time once ------------------------- */
-  char q[3] = {'T','?',NODE_ID};
-  rf95.send((uint8_t*)q, 3); rf95.waitPacketSent();
-  uint32_t t0 = millis();
-  while (millis() - t0 < 4000) {              // 4 s window
+  /* ask base for time */
+  uint8_t req[3] = { 'T','?',NODE_ID };
+  rf95.send(req, 3); rf95.waitPacketSent();
+  Serial.println("Sent time request");
+
+  uint32_t deadline = millis() + 3000;      // wait up to 3 s
+  while (millis() < deadline) {
     if (rf95.available()) {
-      uint8_t b[6]; uint8_t n = rf95.recv(b,nullptr);
-      if (n==6 && b[0]=='T' && b[1]==':') { uint32_t e; memcpy(&e,b+2,4); syncUTC(e); break; }
+      uint8_t b[6]; uint8_t n = rf95.recv(b, nullptr);
+      if (n == 6 && b[0]=='T' && b[1]==':') {
+        uint32_t e; memcpy(&e,b+2,4); syncUTC(e);
+        Serial.print("Synced UTC ");
+        Serial.println(e);
+        break;
+      }
     }
+    yield();                                // feed watchdog
   }
-  Serial.printf("  UTC base = %lu\n", rtc.utc0);
+  if (rtc.utc0 == 0) Serial.println("No time reply; using RTC value");
 }
 
-/* ---------- one-cycle loop ----------------------------- */
-void loop() {
-  uint32_t now = nowUTC();
-  uint32_t nextHalf = (now/1800UL+1)*1800UL;
-  uint32_t sampleT  = nextHalf;                // all sample together
-  uint32_t txT      = nextHalf + TX_OFFSET_S;  // slot 30 s/45 s
+/* ---------- LOOP runs once each wake ------------------- */
+void loop()
+{
+  uint32_t utcNow   = nowUTC();
+  uint32_t nextHalf = (utcNow / 1800UL + 1) * 1800UL;  // next :00/:30
+  uint32_t sampleT  = nextHalf;
+  uint32_t txT      = nextHalf + TX_OFFSET_S;
 
-  /* ---------- sleep until just before sample ---------- */
-  uint32_t ds = (sampleT>now)?(sampleT-now):0;
-  if (ds>SLEEP_MARGIN_S) deepSleepSec(ds-SLEEP_MARGIN_S);
+  Serial.print("Next sample ");
+  Serial.print(sampleT);
+  Serial.print("  TX ");
+  Serial.println(txT);
 
-  /* ---------- take TEROS measurement ------------------ */
-  Serial.println("  taking SDI-12 measurement …");
-  sdi.begin(); sdi.sendCommand("0M!"); delay(1200);
+  /* sleep until just before sample */
+  uint32_t wait = (sampleT > utcNow) ? (sampleT - utcNow) : 0;
+  if (wait > SLEEP_MARGIN_S) deepSleepSec(wait - SLEEP_MARGIN_S);
+
+  /* take TEROS measurement */
+  Serial.println("Taking SDI-12 reading …");
+  sdi.begin();
+  sdi.sendCommand("0M!"); delay(1200);
   sdi.sendCommand("0D0!"); delay(50);
-  String reply; while (sdi.available()) reply+=(char)sdi.read(); sdi.end();
-  Serial.printf("  raw reply %s\n", reply.c_str());
+  String sensorLine;
+  while (sdi.available()) sensorLine += (char)sdi.read();
+  sdi.end();
+  Serial.print("Sensor reply: ");
+  Serial.println(sensorLine);
 
-  /* ---------- wait for our TX slot -------------------- */
-  now = nowUTC(); uint32_t wait = (txT>now)?(txT-now):0;
-  if (wait) { Serial.printf("  wait %us to TX slot …\n", wait); delay(wait*1000UL); }
+  /* wait until our TX slot */
+  utcNow = nowUTC();
+  wait = (txT > utcNow) ? (txT - utcNow) : 0;
+  if (wait) { Serial.print("Waiting "); Serial.print(wait); Serial.println(" s"); delay(wait*1000UL); }
 
-  /* ---------- send packet ----------------------------- */
-  String pkt = String(NODE_ID)+'|'+reply;
-  rf95.send((uint8_t*)pkt.c_str(), pkt.length()); rf95.waitPacketSent();
-  Serial.printf("  TX → %s\n", pkt.c_str());
+  /* send packet  id|payload */
+  String msg = String(NODE_ID) + '|' + sensorLine;
+  rf95.send((uint8_t*)msg.c_str(), msg.length());
+  rf95.waitPacketSent();
+  Serial.print("Sent packet: ");
+  Serial.println(msg);
 
-  /* ---------- listen 2 s for time ACK ----------------- */
-  uint8_t buf[6]; bool gotAck=false; uint32_t dl=millis()+2000;
-  while (millis()<dl) {
+  /* listen 2 s for ACK/time update */
+  bool ack = false; uint32_t until = millis() + 2000;
+  while (millis() < until) {
     if (rf95.available()) {
-      uint8_t n=rf95.recv(buf,nullptr);
-      if(n==6&&buf[0]=='T'&&buf[1]==':'){uint32_t e; memcpy(&e,buf+2,4); syncUTC(e); gotAck=true; break;}
+      uint8_t b[6]; uint8_t n = rf95.recv(b, nullptr);
+      if (n == 6 && b[0]=='T' && b[1]=='/') { /* none */ }
+      if (n == 6 && b[0]=='T' && b[1]==':') {
+        uint32_t e; memcpy(&e,b+2,4); syncUTC(e); ack = true; break;
+      }
     }
+    yield();
   }
-  Serial.println(gotAck? "  got time ACK":"  ⚠ no ACK");
+  Serial.println(ack ? "Time ACK received" : "No ACK received");
 
-  /* ---------- deep-sleep to next half-hour ------------ */
-  now = nowUTC();
-  uint32_t sleep = ((now/1800UL+1)*1800UL) - now - SLEEP_MARGIN_S;
-  deepSleepSec(sleep);
+  /* sleep until next :00/:30 minus margin */
+  utcNow = nowUTC();
+  uint32_t sleepS = ((utcNow / 1800UL + 1) * 1800UL) - utcNow - SLEEP_MARGIN_S;
+  deepSleepSec(sleepS);
 }
