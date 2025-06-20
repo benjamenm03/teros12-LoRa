@@ -102,7 +102,7 @@ void loop()
   uint32_t now32 = nowEpoch32();
   if (now32 == 0) { delay(500); return; }            // wait for valid time
 
-  uint32_t halfIdx = now32 / 1800UL;                 // 0,1,2… half-hours
+  uint32_t halfIdx = now32 / 900UL;                 // 0,1,2… half-hours
   if (halfIdx != lastHalf) {
     lastHalf = halfIdx;
 
