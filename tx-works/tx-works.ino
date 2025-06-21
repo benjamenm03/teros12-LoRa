@@ -18,7 +18,7 @@ constexpr int8_t  LORA_TX_PWR   = 13;
 constexpr uint8_t PIN_LORA_CS   = D8;    // GPIO15
 constexpr uint8_t PIN_LORA_INT  = D1;    // GPIO5
 constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
-constexpr uint8_t PIN_TEROS_SDI = D2;    // GPIO4
+constexpr uint8_t PIN_TEROS_SDI = D4;    // GPIO2
 
 /* ---- objects ---- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
