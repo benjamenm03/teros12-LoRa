@@ -186,7 +186,8 @@ void loop() {
 
     /* 3. TX */
     char pkt[80];
-    snprintf(pkt, sizeof(pkt), "DATA:%u,%s", NODE_ID, reading.c_str());
+    snprintf(pkt, sizeof(pkt), "DATA:%u,%" PRIu32 ",%s",
+             NODE_ID, epochNow, reading.c_str());
     loraSend(pkt);
 
     /* 4. ACK wait */
