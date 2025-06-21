@@ -24,6 +24,23 @@ constexpr uint8_t PIN_TEROS_SDI = D4;    // GPIO2
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SDI12   sdi(PIN_TEROS_SDI);
 
+/* ---- read a CR/LF terminated line from SDI-12 ---- */
+bool readLine(String &out, uint16_t tout = 4000)
+{
+  out = "";
+  bool sawCR = false;
+  uint32_t t0 = millis();
+  while (millis() - t0 < tout) {
+    while (sdi.available()) {
+      char c = sdi.read();
+      if (c == '\r')               sawCR = true;
+      else if (c == '\n' && sawCR) { out.trim(); return true; }
+      else                         { out += c; sawCR = false; }
+    }
+  }
+  return false;
+}
+
 /* ---- epoch helpers ---- */
 inline uint32_t nowEpoch32() { return static_cast<uint32_t>(time(nullptr)); }
 inline void setEpoch32(uint32_t e){
@@ -55,14 +72,38 @@ bool loraWait(String& out, uint32_t ms){
 }
 
 /* ---- Teros-12 read ---- */
-String readTeros(){
-  sdi.begin(); delay(100);
-  sdi.sendCommand("0M!"); delay(1200);
+String readTeros()
+{
+  sdi.begin();
+  delay(100);
+
   sdi.clearBuffer();
-  sdi.sendCommand("0D0!"); delay(50);
-  String r = sdi.readString(); r.trim();
+  sdi.sendCommand("0M!");
+
+  String echo;
+  if (!readLine(echo, 1000) || echo.length() < 4) {
+    sdi.end();
+    return String("");
+  }
+
+  uint16_t ttt = echo.substring(1,4).toInt();
+  if (ttt == 0) ttt = 13;
+  const unsigned long EXTRA = 2500UL;
+  delay((unsigned long)ttt * 1000UL + EXTRA);
+
+  for (byte k = 0; k < 6; ++k) {
+    sdi.clearBuffer();
+    sdi.sendCommand("0D0!");
+    String raw;
+    if (readLine(raw, 1500) && raw.indexOf('+') > 0) {
+      sdi.end();
+      return raw;
+    }
+    delay(1000);
+  }
+
   sdi.end();
-  return r;                            // "0+0.351+23.4+0"
+  return String("");                     // read failed
 }
 
 /* ---- boot-time clock sync ---- */
