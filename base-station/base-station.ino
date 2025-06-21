@@ -1,111 +1,172 @@
-/*****************************************************************
- *  DEBUG base-station  –  NodeMCU V3 + RFM95 + µSD + Wi-Fi/NTP
- *****************************************************************/
+/**********************************************************************
+ *  SOIL-MOISTURE  BASE STATION  –  ESP8266 NodeMCU v3
+ *  ---------------------------------------------------------------
+ *  • LoRa 915 MHz (RFM95)      – RadioHead RH_RF95
+ *  • SD card (SdFat, CS=D4, CD=D2)
+ *  • Wi-Fi “MSetup” (open)     – fetch UTC via one-shot NTP
+ *  • Messages
+ *        "REQT:<id>"           → "TIME:<epoch32>"
+ *        "DATA:<id>,<data>"    → append CSV, wait 5 s → "ACKTIME:<epoch32>"
+ *********************************************************************/
 #include <ESP8266WiFi.h>
-#include <time.h>
+#include <WiFiUdp.h>
 #include <SPI.h>
-#include <RH_RF95.h>
 #include <SdFat.h>
+#include <RH_RF95.h>
+#include <sys/time.h>
+#include <time.h>
+#include <inttypes.h>              // PRIu32
 
-/* pins */
-constexpr uint8_t PIN_RF_CS  = D8;
-constexpr uint8_t PIN_RF_IRQ = D1;         // NOT used (polling mode)
-constexpr uint8_t PIN_SD_CS  = D4;
-constexpr uint8_t PIN_SD_CD  = D2;         // HIGH = card present
+/* -------- pin map (NodeMCU v3) -------- */
+constexpr uint8_t PIN_LORA_CS   = D8;    // GPIO15
+constexpr uint8_t PIN_LORA_INT  = D1;    // GPIO5
+constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
 
-const char* WIFI_SSID = "MSetup";
-const char* WIFI_PSK  = "";
+constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
+constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
 
-RH_RF95 rf95(PIN_RF_CS, 255);              // 255 = polling, no IRQ
+/* -------- radio -------- */
+constexpr float   LORA_FREQ_MHZ = 915.0;
+constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
+
+/* -------- globals -------- */
+RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
+WiFiUDP ntpUDP;
 
-bool   rowReceived[3] = {false};
-String rowValue  [3];
+/* -------- tiny NTP helper -------- */
+const uint32_t NTP2UNIX = 2'208'988'800UL;      // 1900‒>1970 offset
 
-/* helpers ------------------------------------------------ */
-void connectWiFiAndTime()
+bool getNtpEpoch(uint32_t &utc32)
 {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PSK);
-  Serial.print("Wi-Fi connecting");
-  while (WiFi.status() != WL_CONNECTED) { delay(250); Serial.print('.'); }
-  Serial.print(" OK  IP=");
-  Serial.println(WiFi.localIP());
-  configTime(0,0,"pool.ntp.org","time.nist.gov");
-  while (time(nullptr) < 1700000000UL) { delay(200); Serial.print('.'); }
-  Serial.println("\nNTP synced");
+  uint8_t pkt[48] = {};
+  pkt[0] = 0b11100011;                           // LI=3, VN=4, Mode=3 (client)
+
+  ntpUDP.begin(0);
+  if (!ntpUDP.beginPacket("pool.ntp.org", 123)) return false;
+  ntpUDP.write(pkt, 48);
+  ntpUDP.endPacket();
+
+  const uint32_t t0 = millis();
+  while (millis() - t0 < 2000) {                 // 2-s timeout
+    if (ntpUDP.parsePacket() == 48) {
+      ntpUDP.read(pkt, 48);
+      uint32_t secs = (pkt[40] << 24) | (pkt[41] << 16) |
+                      (pkt[42] <<  8) |  pkt[43];
+      utc32 = secs - NTP2UNIX;
+      ntpUDP.stop();
+      return true;
+    }
+    delay(10);
+  }
+  ntpUDP.stop();
+  return false;
 }
 
-void openSD()
-{
-  pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
-  pinMode(PIN_SD_CD, INPUT_PULLUP);
-  if (digitalRead(PIN_SD_CD) == LOW) { Serial.println("No SD card detected"); return; }
-  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(12)))
-    Serial.println("SD init OK");
-  else
-    Serial.println("SD init FAIL");
+/* -------- epoch helpers -------- */
+inline uint32_t nowEpoch32() {
+  return static_cast<uint32_t>(time(nullptr));   // fits until Y2038
+}
+inline void setEpoch32(uint32_t e) {
+  timeval tv{ static_cast<time_t>(e), 0 };
+  settimeofday(&tv, nullptr);
 }
 
-void dumpHex(const uint8_t* p, uint8_t n)
+/* -------- SD logger -------- */
+void logCsv(uint8_t nodeId, const char* payload)
 {
-  for (uint8_t i=0;i<n;i++) { if (p[i]<16) Serial.print('0'); Serial.print(p[i],HEX); Serial.print(' '); }
+  if (digitalRead(PIN_SD_CD)) return;            // no card present
+  FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
+  if (!f) { Serial.println(F("! SD open fail")); return; }
+
+  f.print(nowEpoch32()); f.print(',');           // epoch
+  f.print(nodeId);      f.print(',');
+  f.println(payload);
+  f.close();
 }
 
-void sendTime(uint8_t id)
+/* -------- send current time -------- */
+void sendEpochTo(uint8_t dest)
 {
-  uint8_t pkt[6] = {'T',':'};
-  uint32_t t = time(nullptr);
-  memcpy(pkt+2,&t,4);
-  rf95.send(pkt,6); rf95.waitPacketSent();
-  Serial.print("Time sent to "); Serial.print(id); Serial.print("  ");
-  dumpHex(pkt,6); Serial.println();
+  char msg[24];
+  uint32_t now32 = nowEpoch32();
+  snprintf(msg, sizeof(msg), "TIME:%" PRIu32, now32);
+
+  rf95.send(reinterpret_cast<uint8_t*>(msg), strlen(msg));
+  rf95.waitPacketSent();
+
+  Serial.printf("→ %s\n", msg);
 }
 
-/* setup -------------------------------------------------- */
+/* ======================  SETUP  ====================== */
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("\n==== BASE DEBUG ====");
-  connectWiFiAndTime();
+  delay(200);
 
-  if (!rf95.init()) { Serial.println("LoRa init FAIL"); while(1){} }
-  rf95.setFrequency(915.0);
-  rf95.setTxPower(20,false);
-  Serial.println("LoRa init OK – polling mode – listening");
+  /* LoRa */
+  pinMode(PIN_LORA_RST, OUTPUT);
+  digitalWrite(PIN_LORA_RST, LOW);  delay(10);
+  digitalWrite(PIN_LORA_RST, HIGH); delay(10);
+  if (!rf95.init()) { Serial.println(F("LoRa init FAIL")); while (true); }
+  rf95.setFrequency(LORA_FREQ_MHZ);
+  rf95.setTxPower(LORA_TX_PWR, false);
+  Serial.println(F("LoRa ready"));
 
-  openSD();
+  /* SD */
+  pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
+  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
+        Serial.println(F("SD OK"));
+  else  Serial.println(F("SD init FAIL"));
+
+  /* Wi-Fi → NTP (one-shot) */
+  WiFi.mode(WIFI_STA);
+  WiFi.begin("MSetup");                       // open AP
+  Serial.print(F("Wi-Fi…"));
+  uint32_t w0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - w0 < 15'000) {
+    delay(200); Serial.print('.');
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    uint32_t ep;
+    if (getNtpEpoch(ep)) {
+      setEpoch32(ep);
+      Serial.printf("Clock synced: %" PRIu32 "\n", ep);
+    } else Serial.println(F("! NTP failed – clock = 0"));
+  } else {
+    Serial.println(F("! Wi-Fi failed – unsynced clock"));
+  }
 }
 
-/* loop --------------------------------------------------- */
+/* ======================  LOOP  ====================== */
 void loop()
 {
-  static uint32_t blk = time(nullptr)/1800UL;
-
+  /* LoRa inbox */
   if (rf95.available()) {
-    uint8_t buf[81]; uint8_t len = rf95.recv(buf,nullptr);
-    if (len>80) len=80; buf[len]=0;
-    Serial.print("Packet len "); Serial.print(len);
-    Serial.print("  RSSI ");    Serial.println(rf95.lastRssi(),DEC);
-    Serial.print("Hex: "); dumpHex(buf,len); Serial.println();
-    Serial.print("ASCII: "); Serial.println((char*)buf);
+    uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
+    uint8_t buf[len];
+    if (rf95.recv(buf, &len)) {
+      buf[len] = '\0';
+      String pkt(reinterpret_cast<char*>(buf));
+      Serial.printf("← %s\n", pkt.c_str());
 
-    /* data "id|payload" */
-    int bar = String((char*)buf).indexOf('|');
-    if (bar>0) {
-      uint8_t id = atoi((char*)buf);
-      if (id==1||id==2) { rowReceived[id]=true; rowValue[id]=String((char*)buf).substring(bar+1); }
-      sendTime(id);
-    }
-    /* time request "T?X" */
-    else if (len==3 && buf[0]=='T' && buf[1]=='?') {
-      uint8_t id = buf[2];
-      Serial.print("Time request from "); Serial.println(id);
-      sendTime(id);
+      if (pkt.startsWith("REQT:")) {                         // time request
+        sendEpochTo(pkt.substring(5).toInt());
+
+      } else if (pkt.startsWith("DATA:")) {                  // sensor data
+        int comma = pkt.indexOf(',');
+        uint8_t nodeId = pkt.substring(5, comma).toInt();
+        logCsv(nodeId, pkt.c_str() + comma + 1);
+
+        delay(5000);
+        char ack[28];
+        snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
+        rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
+        rf95.waitPacketSent();
+        Serial.printf("→ %s\n", ack);
+      }
     }
   }
-
-  /* write row every :00 / :30 */
-  time_t utc=time(nullptr); uint32_t cur=utc/1800UL;
-  if (cur!=blk) { Serial.println("Half-hour boundary"); blk=cur; }
 }
