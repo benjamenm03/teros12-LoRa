@@ -6,7 +6,9 @@
  *  • Samples on every Unix multiple of SLOT_SECONDS (600 s)
  *  • Radio is put in rf95.sleep() during every MCU watchdog nap
  *    → ≈10× longer battery life
- *********************************************************************/
+ *  • DATA packets carry timestamped samples; missing ACK causes
+ *    the next packet to include the previous sample as well
+*********************************************************************/
 #include <SPI.h>
 #include <RH_RF95.h>
 #include <SDI12.h>
@@ -39,6 +41,13 @@ SDI12   sdi(PIN_SDILINE);
 /* ---------- epoch counter ------------ */
 volatile uint32_t epochNow = 0;
 uint32_t millisRef = 0;
+
+struct Sample {
+  uint32_t ts;
+  String   val;
+};
+bool    haveUnsent = false;
+Sample  unsent;
 
 /* ---------------- helpers ------------ */
 void tickWhileAwake() {
@@ -170,7 +179,7 @@ void loop() {
     Serial.print(F("  (epoch ")); Serial.print(epochNow); Serial.println(F(") ==="));
 #endif
     /* 1 measure */
-    String reading = readTeros();
+    Sample cur{ epochNow, readTeros() };
     tickWhileAwake();
 
     /* 2 offset nap (radio asleep) */
@@ -178,8 +187,14 @@ void loop() {
     announceSleep(F("node offset"), offset, true);
 
     /* 3 TX */
-    char pkt[80];
-    snprintf(pkt, sizeof(pkt), "DATA:%u,%s", NODE_ID, reading.c_str());
+    char pkt[120];
+    if (haveUnsent)
+      snprintf(pkt, sizeof(pkt), "DATA:%u,%" PRIu32 ",%s|%" PRIu32 ",%s",
+               NODE_ID, unsent.ts, unsent.val.c_str(),
+               cur.ts, cur.val.c_str());
+    else
+      snprintf(pkt, sizeof(pkt), "DATA:%u,%" PRIu32 ",%s",
+               NODE_ID, cur.ts, cur.val.c_str());
     loraSend(pkt);
 
     /* 4 ACKTIME wait (radio awake) */
@@ -187,9 +202,13 @@ void loop() {
     if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
       epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
       millisRef = millis();
+      haveUnsent = false;
 #if defined(SERIAL_DEBUG)
       Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
 #endif
+    } else {
+      unsent = cur;
+      haveUnsent = true;
     }
     tickWhileAwake();
   }

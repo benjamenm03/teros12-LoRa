@@ -5,9 +5,10 @@
  *  • SD card (SdFat, CS=D4, CD=D2)
  *  • Wi-Fi “MSetup” (open)     – fetch UTC via one-shot NTP
  *  • Messages
- *        "REQT:<id>"           → "TIME:<epoch32>"
- *        "DATA:<id>,<data>"    → append CSV, wait 5 s → "ACKTIME:<epoch32>"
- *********************************************************************/
+ *        "REQT:<id>"               → "TIME:<epoch32>"
+ *        "DATA:<id>,<ts>,<val>[|<ts>,<val>]" → append CSV, wait 5 s
+ *                                 → "ACKTIME:<epoch32>"
+*********************************************************************/
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <SPI.h>
@@ -73,13 +74,13 @@ inline void setEpoch32(uint32_t e) {
 }
 
 /* -------- SD logger -------- */
-void logCsv(uint8_t nodeId, const char* payload)
+void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (digitalRead(PIN_SD_CD)) return;            // no card present
   FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
   if (!f) { Serial.println(F("! SD open fail")); return; }
 
-  f.print(nowEpoch32()); f.print(',');           // epoch
+  f.print(sampleEpoch); f.print(',');
   f.print(nodeId);      f.print(',');
   f.println(payload);
   f.close();
@@ -131,10 +132,12 @@ void setup()
 
   if (WiFi.status() == WL_CONNECTED) {
     uint32_t ep;
-    if (getNtpEpoch(ep)) {
-      setEpoch32(ep);
-      Serial.printf("Clock synced: %" PRIu32 "\n", ep);
-    } else Serial.println(F("! NTP failed – clock = 0"));
+    while (!getNtpEpoch(ep)) {
+      Serial.println(F("! NTP failed – retry in 5 s"));
+      delay(5000);
+    }
+    setEpoch32(ep);
+    Serial.printf("Clock synced: %" PRIu32 "\n", ep);
   } else {
     Serial.println(F("! Wi-Fi failed – unsynced clock"));
   }
@@ -158,7 +161,19 @@ void loop()
       } else if (pkt.startsWith("DATA:")) {                  // sensor data
         int comma = pkt.indexOf(',');
         uint8_t nodeId = pkt.substring(5, comma).toInt();
-        logCsv(nodeId, pkt.c_str() + comma + 1);
+
+        String records = pkt.substring(comma + 1);  // "epoch,data[|epoch,data]"
+        int start = 0;
+        while (start < records.length()) {
+          int sep = records.indexOf('|', start);
+          String rec = (sep == -1) ? records.substring(start)
+                                   : records.substring(start, sep);
+          int c2 = rec.indexOf(',');
+          uint32_t ts = rec.substring(0, c2).toInt();
+          String data = rec.substring(c2 + 1);
+          logCsv(nodeId, ts, data.c_str());
+          if (sep == -1) break; else start = sep + 1;
+        }
 
         delay(5000);
         char ack[28];
