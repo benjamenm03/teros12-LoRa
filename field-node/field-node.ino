@@ -180,7 +180,7 @@ void loop() {
 #endif
       firstSlot = false;
     } else {
-      uint16_t offset = 15 + 15 * NODE_ID;        // 30 s for node-1
+      uint16_t offset = 15 + 30 * NODE_ID;        // 30 s for node-1
       announceSleep(F("node offset"), offset, true);
     }
 
