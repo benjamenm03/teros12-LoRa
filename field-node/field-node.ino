@@ -3,7 +3,7 @@
  *  -----------------------------------------------------------------
  *  • Teros-12 on D2  (SDI-12)
  *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
- *  • Samples on every Unix multiple of SLOT_SECONDS (600 s)
+ *  • Samples on every Unix multiple of SLOT_SECONDS (300 s)
  *  • Radio is put in rf95.sleep() during every MCU watchdog nap
  *    → ≈10× longer battery life
  *  • DATA packets carry timestamped samples; missing ACK causes
@@ -28,7 +28,7 @@ constexpr uint8_t PIN_LORA_INT = 3;        // INT1
 constexpr uint8_t PIN_SDILINE  = 2;
 
 /* ---------- timing ------------------- */
-constexpr uint16_t SLOT_SECONDS = 600;     // 10-min slots
+constexpr uint16_t SLOT_SECONDS = 300;     // 5-min slots
 
 /* ---------- LoRa params -------------- */
 constexpr float  LORA_FREQ_MHZ = 915.0;
