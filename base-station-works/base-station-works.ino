@@ -1,201 +1,172 @@
 /**********************************************************************
- *  SOIL-MOISTURE  FIELD NODE – Arduino Nano Classic  (DEBUG VERSION)
- *  -----------------------------------------------------------------
- *  • Teros-12 on D2  (SDI-12)
- *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
- *  • Samples on every Unix multiple of SLOT_SECONDS (600 s)
- *  • Radio is put in rf95.sleep() during every MCU watchdog nap
- *    → ≈10× longer battery life
+ *  SOIL-MOISTURE  BASE STATION  –  ESP8266 NodeMCU v3
+ *  ---------------------------------------------------------------
+ *  • LoRa 915 MHz (RFM95)      – RadioHead RH_RF95
+ *  • SD card (SdFat, CS=D4, CD=D2)
+ *  • Wi-Fi “MSetup” (open)     – fetch UTC via one-shot NTP
+ *  • Messages
+ *        "REQT:<id>"           → "TIME:<epoch32>"
+ *        "DATA:<id>,<data>"    → append CSV, wait 5 s → "ACKTIME:<epoch32>"
  *********************************************************************/
+#include <ESP8266WiFi.h>
+#include <WiFiUdp.h>
 #include <SPI.h>
+#include <SdFat.h>
 #include <RH_RF95.h>
-#include <SDI12.h>
-#include <LowPower.h>
-#include <inttypes.h>
+#include <sys/time.h>
+#include <time.h>
+#include <inttypes.h>              // PRIu32
 
-/* ---------- console output ---------- */
-#define SERIAL_DEBUG                       // comment to silence
+/* -------- pin map (NodeMCU v3) -------- */
+constexpr uint8_t PIN_LORA_CS   = D8;    // GPIO15
+constexpr uint8_t PIN_LORA_INT  = D1;    // GPIO5
+constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
 
-/* ---------- user settings ------------ */
-constexpr uint8_t NODE_ID = 1;             // 1–4 unique per probe
+constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
+constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
 
-/* ---------- pin map ------------------ */
-constexpr uint8_t PIN_LORA_CS  = 10;
-constexpr uint8_t PIN_LORA_RST = 9;
-constexpr uint8_t PIN_LORA_INT = 3;        // INT1
-constexpr uint8_t PIN_SDILINE  = 2;
+/* -------- radio -------- */
+constexpr float   LORA_FREQ_MHZ = 915.0;
+constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 
-/* ---------- timing ------------------- */
-constexpr uint16_t SLOT_SECONDS = 600;     // 10-min slots
-
-/* ---------- LoRa params -------------- */
-constexpr float  LORA_FREQ_MHZ = 915.0;
-constexpr int8_t LORA_TX_PWR   = 13;
-
-/* ---------- objects ------------------ */
+/* -------- globals -------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
-SDI12   sdi(PIN_SDILINE);
+SdFat   sd;
+WiFiUDP ntpUDP;
 
-/* ---------- epoch counter ------------ */
-volatile uint32_t epochNow = 0;
-uint32_t millisRef = 0;
+/* -------- tiny NTP helper -------- */
+const uint32_t NTP2UNIX = 2'208'988'800UL;      // 1900‒>1970 offset
 
-/* ---------------- helpers ------------ */
-void tickWhileAwake() {
-  uint32_t now = millis();
-  epochNow += (now - millisRef) / 1000UL;
-  millisRef  = now;
-}
-
-void sleepSeconds_raw(uint16_t sec) {
-  while (sec >= 8) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); epochNow += 8; sec -= 8; }
-  if (sec >= 4)  { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); epochNow += 4; sec -= 4; }
-  if (sec >= 2)  { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); epochNow += 2; sec -= 2; }
-  if (sec >= 1)  { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); epochNow += 1; }
-}
-
-void announceSleep(const __FlashStringHelper *why, uint32_t sec, bool radioSleep)
+bool getNtpEpoch(uint32_t &utc32)
 {
-#if defined(SERIAL_DEBUG)
-  Serial.print(F("  Sleeping ")); Serial.print(sec);
-  Serial.print(F(" s  ("));       Serial.print(why); Serial.println(F(")"));
-  Serial.flush();
-#endif
-  if (radioSleep) rf95.sleep();
-  sleepSeconds_raw(static_cast<uint16_t>(sec));
-  if (radioSleep) rf95.setModeRx();
-}
+  uint8_t pkt[48] = {};
+  pkt[0] = 0b11100011;                           // LI=3, VN=4, Mode=3 (client)
 
-/* ------------- LoRa helpers ---------- */
-void loraSend(const char *msg) {
-#if defined(SERIAL_DEBUG)
-  Serial.print(F("  → ")); Serial.println(msg);
-#endif
-  rf95.setModeIdle();                     // wake radio from sleep
-  rf95.send(reinterpret_cast<const uint8_t *>(msg), strlen(msg));
-  rf95.waitPacketSent();
-  rf95.setModeRx();
-}
+  ntpUDP.begin(0);
+  if (!ntpUDP.beginPacket("pool.ntp.org", 123)) return false;
+  ntpUDP.write(pkt, 48);
+  ntpUDP.endPacket();
 
-bool loraWait(String &out, uint16_t ms) {
-  uint32_t t0 = millis();
-  while (millis() - t0 < ms) {
-    if (rf95.available()) {
-      uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
-      uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
-      if (rf95.recv(buf, &len)) {
-        for (uint8_t i = 0; i < len; ++i)
-          buf[i] = (buf[i] >= 32 && buf[i] <= 126) ? buf[i] : '?';
-        buf[len] = '\0';
-        out = reinterpret_cast<char *>(buf);
-#if defined(SERIAL_DEBUG)
-        Serial.print(F("  ← ")); Serial.println(out);
-#endif
-        return true;
-      }
+  const uint32_t t0 = millis();
+  while (millis() - t0 < 2000) {                 // 2-s timeout
+    if (ntpUDP.parsePacket() == 48) {
+      ntpUDP.read(pkt, 48);
+      uint32_t secs = (pkt[40] << 24) | (pkt[41] << 16) |
+                      (pkt[42] <<  8) |  pkt[43];
+      utc32 = secs - NTP2UNIX;
+      ntpUDP.stop();
+      return true;
     }
-    delay(4);
+    delay(10);
   }
-#if defined(SERIAL_DEBUG)
-  Serial.println(F("  …timeout"));
-#endif
+  ntpUDP.stop();
   return false;
 }
 
-/* ------------- Teros read ------------ */
-String readTeros() {
-#if defined(SERIAL_DEBUG)
-  Serial.println(F("  Starting Teros measurement"));
-#endif
-  sdi.begin(); delay(100);
-  sdi.sendCommand("0M!");  delay(1500);
-  sdi.clearBuffer();
-  sdi.sendCommand("0D0!"); delay(60);
-  String line = sdi.readString(); line.trim();
-  for (size_t i = 0; i < line.length(); ++i)
-    if (line[i] < 32 || line[i] > 126) line[i] = '?';
-  sdi.end();
-#if defined(SERIAL_DEBUG)
-  Serial.print(F("  Teros raw: ")); Serial.println(line);
-#endif
-  return line;
+/* -------- epoch helpers -------- */
+inline uint32_t nowEpoch32() {
+  return static_cast<uint32_t>(time(nullptr));   // fits until Y2038
+}
+inline void setEpoch32(uint32_t e) {
+  timeval tv{ static_cast<time_t>(e), 0 };
+  settimeofday(&tv, nullptr);
 }
 
-/* ---------- initial clock sync ------ */
-void syncClock() {
-  char req[] = "REQT:X"; req[5] = '0' + NODE_ID;
-  loraSend(req);
-  String pkt;
-  if (loraWait(pkt, 5000) && pkt.startsWith("TIME:")) {
-    epochNow  = strtoul(pkt.c_str() + 5, nullptr, 10);
-    millisRef = millis();
-#if defined(SERIAL_DEBUG)
-    Serial.print(F("  Clock set to ")); Serial.println(epochNow);
-#endif
-  }
+/* -------- SD logger -------- */
+void logCsv(uint8_t nodeId, const char* payload)
+{
+  if (digitalRead(PIN_SD_CD)) return;            // no card present
+  FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
+  if (!f) { Serial.println(F("! SD open fail")); return; }
+
+  f.print(nowEpoch32()); f.print(',');           // epoch
+  f.print(nodeId);      f.print(',');
+  f.println(payload);
+  f.close();
 }
 
-/* ============================ SETUP ============================== */
-void setup() {
+/* -------- send current time -------- */
+void sendEpochTo(uint8_t dest)
+{
+  char msg[24];
+  uint32_t now32 = nowEpoch32();
+  snprintf(msg, sizeof(msg), "TIME:%" PRIu32, now32);
+
+  rf95.send(reinterpret_cast<uint8_t*>(msg), strlen(msg));
+  rf95.waitPacketSent();
+
+  Serial.printf("→ %s\n", msg);
+}
+
+/* ======================  SETUP  ====================== */
+void setup()
+{
   Serial.begin(115200);
-  delay(150);
-  Serial.println(F("--------------------------------------------"));
-  Serial.print  (F("Node ")); Serial.println(NODE_ID);
+  delay(200);
 
+  /* LoRa */
   pinMode(PIN_LORA_RST, OUTPUT);
   digitalWrite(PIN_LORA_RST, LOW);  delay(10);
   digitalWrite(PIN_LORA_RST, HIGH); delay(10);
-  rf95.init();
+  if (!rf95.init()) { Serial.println(F("LoRa init FAIL")); while (true); }
   rf95.setFrequency(LORA_FREQ_MHZ);
   rf95.setTxPower(LORA_TX_PWR, false);
-  rf95.setModeRx();
-  Serial.print(F("LoRa ready on ")); Serial.print(LORA_FREQ_MHZ); Serial.println(F(" MHz"));
+  Serial.println(F("LoRa ready"));
 
-  pinMode(PIN_SDILINE, INPUT_PULLUP);
-  syncClock();
+  /* SD */
+  pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
+  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
+        Serial.println(F("SD OK"));
+  else  Serial.println(F("SD init FAIL"));
+
+  /* Wi-Fi → NTP (one-shot) */
+  WiFi.mode(WIFI_STA);
+  WiFi.begin("MSetup");                       // open AP
+  Serial.print(F("Wi-Fi…"));
+  uint32_t w0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - w0 < 15'000) {
+    delay(200); Serial.print('.');
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    uint32_t ep;
+    if (getNtpEpoch(ep)) {
+      setEpoch32(ep);
+      Serial.printf("Clock synced: %" PRIu32 "\n", ep);
+    } else Serial.println(F("! NTP failed – clock = 0"));
+  } else {
+    Serial.println(F("! Wi-Fi failed – unsynced clock"));
+  }
 }
 
-/* ============================= LOOP ============================== */
-void loop() {
-  tickWhileAwake();
-  if (epochNow == 0) { delay(250); return; }
+/* ======================  LOOP  ====================== */
+void loop()
+{
+  /* LoRa inbox */
+  if (rf95.available()) {
+    uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
+    uint8_t buf[len];
+    if (rf95.recv(buf, &len)) {
+      buf[len] = '\0';
+      String pkt(reinterpret_cast<char*>(buf));
+      Serial.printf("← %s\n", pkt.c_str());
 
-  static uint32_t lastSlot = 0;
-  uint32_t slotIdx = epochNow / SLOT_SECONDS;
+      if (pkt.startsWith("REQT:")) {                         // time request
+        sendEpochTo(pkt.substring(5).toInt());
 
-  if (slotIdx != lastSlot) {                // *** new slot
-    lastSlot = slotIdx;
-#if defined(SERIAL_DEBUG)
-    Serial.print(F("\n=== slot ")); Serial.print(slotIdx);
-    Serial.print(F("  (epoch ")); Serial.print(epochNow); Serial.println(F(") ==="));
-#endif
-    /* 1 measure */
-    String reading = readTeros();
-    tickWhileAwake();
+      } else if (pkt.startsWith("DATA:")) {                  // sensor data
+        int comma = pkt.indexOf(',');
+        uint8_t nodeId = pkt.substring(5, comma).toInt();
+        logCsv(nodeId, pkt.c_str() + comma + 1);
 
-    /* 2 offset nap (radio asleep) */
-    uint16_t offset = 15 + 15 * NODE_ID;    // 30 s for node-1
-    announceSleep(F("node offset"), offset, true);
-
-    /* 3 TX */
-    char pkt[80];
-    snprintf(pkt, sizeof(pkt), "DATA:%u,%s", NODE_ID, reading.c_str());
-    loraSend(pkt);
-
-    /* 4 ACKTIME wait (radio awake) */
-    String rsp;
-    if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
-      epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
-      millisRef = millis();
-#if defined(SERIAL_DEBUG)
-      Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
-#endif
+        delay(5000);
+        char ack[28];
+        snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
+        rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
+        rf95.waitPacketSent();
+        Serial.printf("→ %s\n", ack);
+      }
     }
-    tickWhileAwake();
   }
-
-  /* 5 long nap (radio asleep) */
-  uint32_t nextSlot = (slotIdx + 1) * SLOT_SECONDS;
-  if (nextSlot > epochNow)
-    announceSleep(F("until next slot"), nextSlot - epochNow, true);
 }
