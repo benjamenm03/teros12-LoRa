@@ -88,6 +88,7 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
     if (sdMounted) sd.end();
     sdMounted = false;
     sdNeedReinit = true;
+    digitalWrite(PIN_SD_LED, LOW);
     char rec[48];
     snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
     uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
@@ -101,6 +102,7 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   if (sdNeedReinit || !sdMounted) {
     if (!sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
       Serial.println(F("! SD reinit fail"));
+      if (sdMounted) sd.end();
       sdMounted = false;
       sdNeedReinit = true;
       char rec[48];
@@ -120,7 +122,9 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   if (!f) {
     Serial.println(F("! SD open fail"));
     digitalWrite(PIN_SD_LED, LOW);
+    if (sdMounted) sd.end();
     sdMounted = false;
+    sdNeedReinit = true;
     char rec[48];
     snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
     uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
@@ -173,6 +177,7 @@ void setup()
 
   /* SD */
   pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
+  pinMode(PIN_SD_CD, INPUT_PULLUP);
   pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
   if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
         Serial.println(F("SD OK"));
