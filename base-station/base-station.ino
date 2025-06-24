@@ -36,7 +36,11 @@ constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
 WiFiUDP ntpUDP;
-std::vector<String> sdBuffer;           // hold records when SD missing
+
+constexpr uint8_t SD_BUF_MAX = 16;          // max queued records
+char     sdBuffer[SD_BUF_MAX][48];
+uint8_t  sdBufFirst = 0;                    // ring buffer indices
+uint8_t  sdBufCount = 0;
 
 /* -------- tiny NTP helper -------- */
 const uint32_t NTP2UNIX = 2'208'988'800UL;      // 1900‒>1970 offset
@@ -82,7 +86,10 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   if (digitalRead(PIN_SD_CD)) {
     char rec[48];
     snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
-    sdBuffer.emplace_back(rec);               // hold until card present
+    uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
+    strncpy(sdBuffer[idx], rec, sizeof(sdBuffer[idx]) - 1);
+    sdBuffer[idx][sizeof(sdBuffer[idx]) - 1] = '\0';
+    if (sdBufCount < SD_BUF_MAX) sdBufCount++; else sdBufFirst = (sdBufFirst + 1) % SD_BUF_MAX;
     Serial.println(F("! SD missing – buffered"));
     return;
   }
@@ -95,10 +102,11 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
     return;
   }
 
-  for (const String &rec : sdBuffer) {        // flush any backlog
-    f.println(rec);
+  while (sdBufCount) {
+    f.println(sdBuffer[sdBufFirst]);
+    sdBufFirst = (sdBufFirst + 1) % SD_BUF_MAX;
+    sdBufCount--;
   }
-  sdBuffer.clear();
 
   f.print(sampleEpoch); f.print(',');
   f.print(nodeId);      f.print(',');

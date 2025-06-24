@@ -6,5 +6,5 @@ MISO pin 6 and SCK pin 5) so the RFM95 can remain on the hardware SPI pins.
 
 The base station lights an LED on **D3** whenever a write to the SD card is in
 progress so it is clear when removing the card is unsafe. If no card is
-present, incoming records are kept in RAM and flushed to the card once it is
+present, up to 16 records are kept in RAM and flushed to the card once it is
 inserted again.
