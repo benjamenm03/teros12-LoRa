@@ -17,6 +17,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <inttypes.h>              // PRIu32
+#include <vector>
 
 /* -------- pin map (NodeMCU v3) -------- */
 constexpr uint8_t PIN_LORA_CS   = D8;    // GPIO15
@@ -25,6 +26,7 @@ constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
 
 constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
 constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
+constexpr uint8_t PIN_SD_LED    = D3;    // GPIO0  (LED on during SD write)
 
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
@@ -34,6 +36,7 @@ constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
 WiFiUDP ntpUDP;
+std::vector<String> sdBuffer;           // hold records when SD missing
 
 /* -------- tiny NTP helper -------- */
 const uint32_t NTP2UNIX = 2'208'988'800UL;      // 1900‒>1970 offset
@@ -76,14 +79,32 @@ inline void setEpoch32(uint32_t e) {
 /* -------- SD logger -------- */
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
-  if (digitalRead(PIN_SD_CD)) return;            // no card present
+  if (digitalRead(PIN_SD_CD)) {
+    char rec[48];
+    snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
+    sdBuffer.emplace_back(rec);               // hold until card present
+    Serial.println(F("! SD missing – buffered"));
+    return;
+  }
+
+  digitalWrite(PIN_SD_LED, HIGH);             // busy → don't remove card
   FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
-  if (!f) { Serial.println(F("! SD open fail")); return; }
+  if (!f) {
+    Serial.println(F("! SD open fail"));
+    digitalWrite(PIN_SD_LED, LOW);
+    return;
+  }
+
+  for (const String &rec : sdBuffer) {        // flush any backlog
+    f.println(rec);
+  }
+  sdBuffer.clear();
 
   f.print(sampleEpoch); f.print(',');
   f.print(nodeId);      f.print(',');
   f.println(payload);
   f.close();
+  digitalWrite(PIN_SD_LED, LOW);
 }
 
 /* -------- send current time -------- */
@@ -115,7 +136,8 @@ void setup()
   Serial.println(F("LoRa ready"));
 
   /* SD */
-  pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
+  pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
+  pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
   if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
         Serial.println(F("SD OK"));
   else  Serial.println(F("SD init FAIL"));
