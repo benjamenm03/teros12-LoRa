@@ -17,7 +17,6 @@
 #include <sys/time.h>
 #include <time.h>
 #include <inttypes.h>              // PRIu32
-#include <vector>
 
 /* -------- pin map (NodeMCU v3) -------- */
 constexpr uint8_t PIN_LORA_CS   = D8;    // GPIO15
@@ -37,6 +36,7 @@ RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
 WiFiUDP ntpUDP;
 bool    sdMounted = false;                       // true when SD.begin() succeeded
+bool    sdNeedReinit = false;                   // attempt sd.begin() next write
 
 constexpr uint8_t SD_BUF_MAX = 16;          // max queued records
 char     sdBuffer[SD_BUF_MAX][48];
@@ -85,7 +85,9 @@ inline void setEpoch32(uint32_t e) {
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (digitalRead(PIN_SD_CD)) {
+    if (sdMounted) sd.end();
     sdMounted = false;
+    sdNeedReinit = true;
     char rec[48];
     snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
     uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
@@ -96,9 +98,11 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
     return;
   }
 
-  if (!sdMounted) {
+  if (sdNeedReinit || !sdMounted) {
     if (!sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
       Serial.println(F("! SD reinit fail"));
+      sdMounted = false;
+      sdNeedReinit = true;
       char rec[48];
       snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
       uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
@@ -108,6 +112,7 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
       return;
     }
     sdMounted = true;
+    sdNeedReinit = false;
   }
 
   digitalWrite(PIN_SD_LED, HIGH);             // busy → don't remove card
