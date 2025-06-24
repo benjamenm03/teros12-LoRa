@@ -114,16 +114,20 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
 
   WiFiClient client;
   HTTPClient http;
-  if (!http.begin(client, String(THINGSPEAK_HOST) + "/update")) return false;
-  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  if (!http.begin(client, String(THINGSPEAK_HOST) + "/update.json")) return false;
+  http.addHeader("Content-Type", "application/json");
 
-  String body = String("api_key=") + apiKey +
-                "&field1=" + sampleEpoch +
-                "&field2=" + nodeId;
-  if (count >= 1) body += "&field3=" + parts[0];
-  if (count >= 2) body += "&field4=" + parts[1];
-  if (count >= 3) body += "&field5=" + parts[2];
-  if (count >= 4) body += "&field6=" + parts[3];
+  char ts[25];
+  iso8601Utc(ts, sizeof(ts), sampleEpoch);
+
+  String body = String("{\"api_key\":\"") + apiKey +
+                "\",\"created_at\":\"" + ts +
+                "\",\"timezone\":\"UTC\"";
+  if (count >= 1) body += String(",\"field1\":\"") + parts[0] + '"';
+  if (count >= 2) body += String(",\"field2\":\"") + parts[1] + '"';
+  if (count >= 3) body += String(",\"field3\":\"") + parts[2] + '"';
+  if (count >= 4) body += String(",\"field4\":\"") + parts[3] + '"';
+  body += '}';
 
   int code = http.POST(body);
   http.end();
@@ -160,6 +164,17 @@ void isoUtc(char *out, size_t len, uint32_t epoch)
   struct tm tm;
   gmtime_r(&t, &tm);
   snprintf(out, len, "%04d-%02d-%02d %02d:%02d:%02d",
+           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+           tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+// ISO-8601 string suitable for ThingSpeak created_at
+void iso8601Utc(char *out, size_t len, uint32_t epoch)
+{
+  time_t t = static_cast<time_t>(epoch);
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  snprintf(out, len, "%04d-%02d-%02dT%02d:%02d:%02dZ",
            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
            tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
