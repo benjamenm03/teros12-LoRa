@@ -88,6 +88,9 @@ inline void setEpoch32(uint32_t e) {
   settimeofday(&tv, nullptr);
 }
 
+// Format a UTC timestamp for ThingSpeak's `created_at` parameter
+void iso8601Utc(char *out, size_t len, uint32_t epoch);
+
 /* -------- ThingSpeak uploader -------- */
 bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
