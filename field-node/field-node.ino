@@ -5,8 +5,9 @@
  *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
  *  • Samples exactly on every Unix multiple of SLOT_SECONDS (600 s)
  *  • Radio sleeps during every MCU watchdog nap
+ *  • Retries up to 10 unsent records if ACK not received
  *  • **First slot after boot skips the node-offset delay**
- *********************************************************************/
+*********************************************************************/
 #include <SPI.h>
 #include <RH_RF95.h>
 #include <SDI12.h>
@@ -41,6 +42,16 @@ volatile uint32_t epochNow = 0;                   // Unix seconds
 uint32_t millisRef = 0;
 bool firstSlot = true;                            // ← skip offset once
 
+/* ---- resend buffer ---- */
+struct PendingRec {
+  uint32_t ts;
+  String   data;
+};
+
+constexpr uint8_t MAX_BACKLOG = 10;
+PendingRec backlog[MAX_BACKLOG];
+uint8_t backlogCount = 0;                         // number of unsent records
+
 /* ================ helper functions ============== */
 void tickWhileAwake() {
   uint32_t now = millis();
@@ -64,6 +75,16 @@ void announceSleep(const __FlashStringHelper *why, uint32_t sec, bool radioSleep
   if (radioSleep) rf95.sleep();
   sleepSeconds_raw(static_cast<uint16_t>(sec));
   if (radioSleep) rf95.setModeRx();
+}
+
+void deepSleepForever() {
+#if defined(SERIAL_DEBUG)
+  Serial.println(F("  Entering deep sleep – reset required"));
+#endif
+  rf95.sleep();
+  for (;;) {
+    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  }
 }
 
 /* ---- LoRa helpers ---- */
@@ -173,6 +194,12 @@ void loop() {
     String reading = readTeros();
     tickWhileAwake();
 
+    if (backlogCount < MAX_BACKLOG) {
+      backlog[backlogCount].ts   = epochNow;
+      backlog[backlogCount].data = reading;
+      backlogCount++;
+    }
+
     /* 2. node-offset nap (skip on first slot) */
     if (firstSlot) {
 #if defined(SERIAL_DEBUG)
@@ -185,9 +212,16 @@ void loop() {
     }
 
     /* 3. TX */
-    char pkt[80];
-    snprintf(pkt, sizeof(pkt), "DATA:%u,%" PRIu32 ",%s",
-             NODE_ID, epochNow, reading.c_str());
+    String msg = String(F("DATA:")) + NODE_ID + ',';
+    for (uint8_t i = 0; i < backlogCount; ++i) {
+      if (i > 0) msg += '|';
+      msg += backlog[i].ts;
+      msg += ',';
+      msg += backlog[i].data;
+    }
+
+    char pkt[240];
+    msg.toCharArray(pkt, sizeof(pkt));
     loraSend(pkt);
 
     /* 4. ACK wait */
@@ -198,6 +232,15 @@ void loop() {
 #if defined(SERIAL_DEBUG)
       Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
 #endif
+      for (uint8_t i = 0; i < backlogCount; ++i) backlog[i].data = "";
+      backlogCount = 0;
+    } else {
+#if defined(SERIAL_DEBUG)
+      Serial.println(F("  ! ACK missing"));
+#endif
+      if (backlogCount >= MAX_BACKLOG) {
+        deepSleepForever();
+      }
     }
     tickWhileAwake();
   }
