@@ -11,6 +11,7 @@
 *********************************************************************/
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
+#include <ESP8266HTTPClient.h>
 #include <SPI.h>
 #include <SdFat.h>
 #include <RH_RF95.h>
@@ -30,6 +31,10 @@ constexpr uint8_t PIN_SD_LED    = D3;    // GPIO0  (ON = SD busy)
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
 constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
+
+/* -------- ThingSpeak -------- */
+const char* THINGSPEAK_API_KEY = "YOUR_API_KEY";     // set your channel API key
+const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
 
 /* -------- globals -------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
@@ -75,6 +80,45 @@ inline void setEpoch32(uint32_t e) {
   settimeofday(&tv, nullptr);
 }
 
+/* -------- ThingSpeak uploader -------- */
+bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
+{
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  String p(payload);
+  p.replace("\r", "");
+  p.replace("\n", "");
+  char delim = p.indexOf(',') >= 0 ? ',' : '+';  // support comma or plus
+
+  String parts[4];
+  uint8_t count = 0;
+  int start = 0;
+  while (start < p.length() && count < 4) {
+    int sep = p.indexOf(delim, start);
+    if (sep == -1) sep = p.length();
+    parts[count++] = p.substring(start, sep);
+    start = sep + 1;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  if (!http.begin(client, String(THINGSPEAK_HOST) + "/update")) return false;
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  String body = String("api_key=") + THINGSPEAK_API_KEY +
+                "&field1=" + sampleEpoch +
+                "&field2=" + nodeId;
+  if (count >= 1) body += "&field3=" + parts[0];
+  if (count >= 2) body += "&field4=" + parts[1];
+  if (count >= 3) body += "&field5=" + parts[2];
+  if (count >= 4) body += "&field6=" + parts[3];
+
+  int code = http.POST(body);
+  http.end();
+  Serial.printf("ThingSpeak update %d\n", code);
+  return code > 0;
+}
+
 /* -------- SD logger -------- */
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
@@ -92,6 +136,9 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   f.sync();
   f.close();
   digitalWrite(PIN_SD_LED, LOW);
+
+  // also send to ThingSpeak if Wi-Fi is available
+  sendCsvToThingSpeak(nodeId, sampleEpoch, payload);
 }
 
 /* -------- ISO-8601 UTC formatter -------- */
