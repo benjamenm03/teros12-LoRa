@@ -103,7 +103,7 @@ bool loraWait(String &out, uint16_t ms) {
   while (millis() - t0 < ms) {
     if (rf95.available()) {
       uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
-      uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+      uint8_t buf[RH_RF95_MAX_MESSAGE_LEN + 1];
       if (rf95.recv(buf, &len)) {
         for (uint8_t i = 0; i < len; ++i)
           buf[i] = (buf[i] >= 32 && buf[i] <= 126) ? buf[i] : '?';

@@ -77,7 +77,6 @@ inline void setEpoch32(uint32_t e) {
 /* -------- SD logger -------- */
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
-  if (digitalRead(PIN_SD_CD)) return;            // no card present
   digitalWrite(PIN_SD_LED, HIGH);
   FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
   if (!f) {
@@ -94,6 +93,24 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   digitalWrite(PIN_SD_LED, LOW);
 }
 
+/* -------- event logger -------- */
+void logEvent(const char* type, uint8_t id, uint32_t epoch)
+{
+  digitalWrite(PIN_SD_LED, HIGH);
+  FsFile f = sd.open("/events.csv", O_CREAT | O_WRITE | O_APPEND);
+  if (!f) {
+    Serial.println(F("! SD open fail"));
+    digitalWrite(PIN_SD_LED, LOW);
+    return;
+  }
+  f.print(type);   f.print(',');
+  f.print(id);     f.print(',');
+  f.println(epoch);
+  f.sync();
+  f.close();
+  digitalWrite(PIN_SD_LED, LOW);
+}
+
 /* -------- send current time -------- */
 void sendEpochTo(uint8_t dest)
 {
@@ -105,6 +122,7 @@ void sendEpochTo(uint8_t dest)
   rf95.waitPacketSent();
 
   Serial.printf("→ %s\n", msg);
+  logEvent("TIME", dest, now32);
 }
 
 /* ======================  SETUP  ====================== */
@@ -150,6 +168,7 @@ void setup()
     }
     setEpoch32(ep);
     Serial.printf("Clock synced: %" PRIu32 "\n", ep);
+    logEvent("NTP", 0, ep);
   } else {
     Serial.println(F("! Wi-Fi failed – unsynced clock"));
   }
@@ -161,14 +180,16 @@ void loop()
   /* LoRa inbox */
   if (rf95.available()) {
     uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
-    uint8_t buf[len];
+    uint8_t buf[RH_RF95_MAX_MESSAGE_LEN + 1];
     if (rf95.recv(buf, &len)) {
       buf[len] = '\0';
       String pkt(reinterpret_cast<char*>(buf));
       Serial.printf("← %s\n", pkt.c_str());
 
       if (pkt.startsWith("REQT:")) {                         // time request
-        sendEpochTo(pkt.substring(5).toInt());
+        uint8_t id = pkt.substring(5).toInt();
+        logEvent("REQT", id, nowEpoch32());
+        sendEpochTo(id);
 
       } else if (pkt.startsWith("DATA:")) {                  // sensor data
         int comma = pkt.indexOf(',');
