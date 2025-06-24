@@ -37,10 +37,10 @@ constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 // every node (1–4). Leave the placeholders as-is if a channel is
 // not configured for that node.
 const char* THINGSPEAK_API_KEYS[4] = {
-  "YOUR_API_KEY_NODE1",
-  "YOUR_API_KEY_NODE2",
-  "YOUR_API_KEY_NODE3",
-  "YOUR_API_KEY_NODE4"
+  "QNMD4ONWVWQH0RCM",
+  "SMWCSSYAD3OA4Z9T",
+  "DQ96F3W4SSRWCNS0",
+  "D4J924RZTI9FE4SL"
 };
 const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
 
