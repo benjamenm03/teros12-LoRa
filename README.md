@@ -10,12 +10,13 @@ time string so activity can be tracked later.
 
 ## Cloud logging with ThingSpeak
 
-The base station can optionally mirror each row from `soil.csv` to a
-ThingSpeak channel. Create a free account at
-[ThingSpeak](https://thingspeak.com) and add a new channel with at least five
-fields enabled. You may name them however you like (for example `epoch`,
-`node`, `vwc`, `temp` and `ec`). Copy the channel's **Write API Key** and edit
-`base-station/base-station.ino` to replace `YOUR_API_KEY` with it.
+The base station can optionally mirror each row from `soil.csv` to one of
+several ThingSpeak channels. Create a free account at
+[ThingSpeak](https://thingspeak.com) and add a separate channel for each node
+(up to four) with at least five fields enabled. You may name them however you
+like (for example `epoch`, `node`, `vwc`, `temp` and `ec`). Copy each channel's
+**Write API Key** and edit `base-station/base-station.ino` to fill in the
+`THINGSPEAK_API_KEYS` array.
 
 When Wi-Fi is available, every record saved to `soil.csv` is also sent to your
 channel with the following mapping:

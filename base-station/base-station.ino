@@ -33,7 +33,15 @@ constexpr float   LORA_FREQ_MHZ = 915.0;
 constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 
 /* -------- ThingSpeak -------- */
-const char* THINGSPEAK_API_KEY = "YOUR_API_KEY";     // set your channel API key
+// Each node logs to its own channel. Set the Write API key for
+// every node (1–4). Leave the placeholders as-is if a channel is
+// not configured for that node.
+const char* THINGSPEAK_API_KEYS[4] = {
+  "YOUR_API_KEY_NODE1",
+  "YOUR_API_KEY_NODE2",
+  "YOUR_API_KEY_NODE3",
+  "YOUR_API_KEY_NODE4"
+};
 const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
 
 /* -------- globals -------- */
@@ -84,6 +92,10 @@ inline void setEpoch32(uint32_t e) {
 bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (nodeId == 0 || nodeId > 4) return false;          // only nodes 1–4 supported
+
+  const char* apiKey = THINGSPEAK_API_KEYS[nodeId - 1];
+  if (!apiKey || !*apiKey) return false;                // skip if no key configured
 
   String p(payload);
   p.replace("\r", "");
@@ -105,7 +117,7 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
   if (!http.begin(client, String(THINGSPEAK_HOST) + "/update")) return false;
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
-  String body = String("api_key=") + THINGSPEAK_API_KEY +
+  String body = String("api_key=") + apiKey +
                 "&field1=" + sampleEpoch +
                 "&field2=" + nodeId;
   if (count >= 1) body += "&field3=" + parts[0];
