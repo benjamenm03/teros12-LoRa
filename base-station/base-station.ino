@@ -93,8 +93,19 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   digitalWrite(PIN_SD_LED, LOW);
 }
 
+/* -------- ISO-8601 UTC formatter -------- */
+void isoUtc(char *out, size_t len, uint32_t epoch)
+{
+  time_t t = static_cast<time_t>(epoch);
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  snprintf(out, len, "%04d-%02d-%02d %02d:%02d:%02d",
+           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+           tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
 /* -------- event logger -------- */
-void logEvent(const char* type, uint8_t id, uint32_t epoch)
+void logEvent(const char* type, uint8_t id, uint32_t epoch, const char* info = nullptr)
 {
   digitalWrite(PIN_SD_LED, HIGH);
   FsFile f = sd.open("/events.csv", O_CREAT | O_WRITE | O_APPEND);
@@ -103,9 +114,14 @@ void logEvent(const char* type, uint8_t id, uint32_t epoch)
     digitalWrite(PIN_SD_LED, LOW);
     return;
   }
+  char iso[21];
+  isoUtc(iso, sizeof(iso), epoch);
   f.print(type);   f.print(',');
   f.print(id);     f.print(',');
-  f.println(epoch);
+  f.print(epoch);  f.print(',');
+  f.print(iso);
+  if (info && *info) { f.print(','); f.print(info); }
+  f.println();
   f.sync();
   f.close();
   digitalWrite(PIN_SD_LED, LOW);
@@ -139,6 +155,7 @@ void setup()
   rf95.setFrequency(LORA_FREQ_MHZ);
   rf95.setTxPower(LORA_TX_PWR, false);
   Serial.println(F("LoRa ready"));
+  logEvent("BOOT", 0, nowEpoch32());
 
   /* SD */
   pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
@@ -171,6 +188,7 @@ void setup()
     logEvent("NTP", 0, ep);
   } else {
     Serial.println(F("! Wi-Fi failed – unsynced clock"));
+    logEvent("NOWIFI", 0, nowEpoch32());
   }
 }
 
@@ -214,6 +232,7 @@ void loop()
         rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
         rf95.waitPacketSent();
         Serial.printf("→ %s\n", ack);
+        logEvent("DATA", nodeId, nowEpoch32());
       }
     }
   }
