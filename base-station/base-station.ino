@@ -34,6 +34,7 @@ constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 /* -------- globals -------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
+FsFile  soilFile;                         // keep soil log open
 WiFiUDP ntpUDP;
 
 /* -------- tiny NTP helper -------- */
@@ -77,19 +78,20 @@ inline void setEpoch32(uint32_t e) {
 /* -------- SD logger -------- */
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
-  digitalWrite(PIN_SD_LED, HIGH);
-  FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
-  if (!f) {
-    Serial.println(F("! SD open fail"));
-    digitalWrite(PIN_SD_LED, LOW);
-    return;
+  if (!soilFile) {
+    // try to (re)open if it was never opened or got closed
+    soilFile = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
+    if (!soilFile) {
+      Serial.println(F("! SD open fail"));
+      return;
+    }
   }
 
-  f.print(sampleEpoch); f.print(',');
-  f.print(nodeId);      f.print(',');
-  f.println(payload);
-  f.sync();
-  f.close();
+  digitalWrite(PIN_SD_LED, HIGH);
+  soilFile.print(sampleEpoch); soilFile.print(',');
+  soilFile.print(nodeId);      soilFile.print(',');
+  soilFile.println(payload);
+  soilFile.sync();
   digitalWrite(PIN_SD_LED, LOW);
 }
 
@@ -162,9 +164,13 @@ void setup()
   pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
   pinMode(PIN_SD_CD, INPUT_PULLUP);            // LOW = card present
   digitalWrite(PIN_SD_LED, HIGH);
-  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
+  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
         Serial.println(F("SD OK"));
-  else  Serial.println(F("SD init FAIL"));
+        soilFile = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
+        if (!soilFile) Serial.println(F("! soil.csv open fail"));
+  } else {
+        Serial.println(F("SD init FAIL"));
+  }
   digitalWrite(PIN_SD_LED, LOW);
 
   /* Wi-Fi → NTP (one-shot) */
