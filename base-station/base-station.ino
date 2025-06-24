@@ -25,6 +25,7 @@ constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
 
 constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
 constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
+constexpr uint8_t PIN_SD_LED    = D3;    // GPIO0  (ON = SD busy)
 
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
@@ -77,13 +78,20 @@ inline void setEpoch32(uint32_t e) {
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (digitalRead(PIN_SD_CD)) return;            // no card present
+  digitalWrite(PIN_SD_LED, HIGH);
   FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
-  if (!f) { Serial.println(F("! SD open fail")); return; }
+  if (!f) {
+    Serial.println(F("! SD open fail"));
+    digitalWrite(PIN_SD_LED, LOW);
+    return;
+  }
 
   f.print(sampleEpoch); f.print(',');
   f.print(nodeId);      f.print(',');
   f.println(payload);
+  f.sync();
   f.close();
+  digitalWrite(PIN_SD_LED, LOW);
 }
 
 /* -------- send current time -------- */
@@ -116,9 +124,12 @@ void setup()
 
   /* SD */
   pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
+  pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
+  digitalWrite(PIN_SD_LED, HIGH);
   if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
         Serial.println(F("SD OK"));
   else  Serial.println(F("SD init FAIL"));
+  digitalWrite(PIN_SD_LED, LOW);
 
   /* Wi-Fi → NTP (one-shot) */
   WiFi.mode(WIFI_STA);
