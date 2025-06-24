@@ -84,12 +84,35 @@ inline void setEpoch32(uint32_t e) {
 bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (WiFi.status() != WL_CONNECTED) return false;
+
+  String p(payload);
+  p.replace("\r", "");
+  p.replace("\n", "");
+  char delim = p.indexOf(',') >= 0 ? ',' : '+';  // support comma or plus
+
+  String parts[4];
+  uint8_t count = 0;
+  int start = 0;
+  while (start < p.length() && count < 4) {
+    int sep = p.indexOf(delim, start);
+    if (sep == -1) sep = p.length();
+    parts[count++] = p.substring(start, sep);
+    start = sep + 1;
+  }
+
   WiFiClient client;
   HTTPClient http;
   if (!http.begin(client, String(THINGSPEAK_HOST) + "/update")) return false;
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
   String body = String("api_key=") + THINGSPEAK_API_KEY +
-                "&field1=" + sampleEpoch + ',' + nodeId + ',' + payload;
+                "&field1=" + sampleEpoch +
+                "&field2=" + nodeId;
+  if (count >= 1) body += "&field3=" + parts[0];
+  if (count >= 2) body += "&field4=" + parts[1];
+  if (count >= 3) body += "&field5=" + parts[2];
+  if (count >= 4) body += "&field6=" + parts[3];
+
   int code = http.POST(body);
   http.end();
   Serial.printf("ThingSpeak update %d\n", code);

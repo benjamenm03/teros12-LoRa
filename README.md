@@ -10,8 +10,20 @@ time string so activity can be tracked later.
 
 ## Cloud logging with ThingSpeak
 
-The base station can optionally send each CSV line to a ThingSpeak channel.
-Edit `base-station/base-station.ino` and replace `YOUR_API_KEY` with your
-channel's write API key. When Wi-Fi is available, every record appended to
-`soil.csv` is also sent to ThingSpeak using field1 so the online log matches the
-SD card contents.
+The base station can optionally mirror each row from `soil.csv` to a
+ThingSpeak channel. Create a free account at
+[ThingSpeak](https://thingspeak.com) and add a new channel with at least five
+fields enabled. You may name them however you like (for example `epoch`,
+`node`, `vwc`, `temp` and `ec`). Copy the channel's **Write API Key** and edit
+`base-station/base-station.ino` to replace `YOUR_API_KEY` with it.
+
+When Wi-Fi is available, every record saved to `soil.csv` is also sent to your
+channel with the following mapping:
+
+1. `field1` – sample timestamp (Unix epoch)
+2. `field2` – node identifier
+3. `field3` – first value from the Teros payload
+4. `field4` – second value from the payload
+5. `field5` – third value from the payload
+
+Additional payload values, if present, are uploaded to subsequent fields.
