@@ -36,6 +36,7 @@ constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
 WiFiUDP ntpUDP;
+bool    sdMounted = false;                       // true when SD.begin() succeeded
 
 constexpr uint8_t SD_BUF_MAX = 16;          // max queued records
 char     sdBuffer[SD_BUF_MAX][48];
@@ -84,6 +85,7 @@ inline void setEpoch32(uint32_t e) {
 void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (digitalRead(PIN_SD_CD)) {
+    sdMounted = false;
     char rec[48];
     snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
     uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
@@ -94,11 +96,32 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
     return;
   }
 
+  if (!sdMounted) {
+    if (!sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
+      Serial.println(F("! SD reinit fail"));
+      char rec[48];
+      snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
+      uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
+      strncpy(sdBuffer[idx], rec, sizeof(sdBuffer[idx]) - 1);
+      sdBuffer[idx][sizeof(sdBuffer[idx]) - 1] = '\0';
+      if (sdBufCount < SD_BUF_MAX) sdBufCount++; else sdBufFirst = (sdBufFirst + 1) % SD_BUF_MAX;
+      return;
+    }
+    sdMounted = true;
+  }
+
   digitalWrite(PIN_SD_LED, HIGH);             // busy → don't remove card
   FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
   if (!f) {
     Serial.println(F("! SD open fail"));
     digitalWrite(PIN_SD_LED, LOW);
+    sdMounted = false;
+    char rec[48];
+    snprintf(rec, sizeof(rec), "%" PRIu32 ",%u,%s", sampleEpoch, nodeId, payload);
+    uint8_t idx = (sdBufFirst + sdBufCount) % SD_BUF_MAX;
+    strncpy(sdBuffer[idx], rec, sizeof(sdBuffer[idx]) - 1);
+    sdBuffer[idx][sizeof(sdBuffer[idx]) - 1] = '\0';
+    if (sdBufCount < SD_BUF_MAX) sdBufCount++; else sdBufFirst = (sdBufFirst + 1) % SD_BUF_MAX;
     return;
   }
 
@@ -146,9 +169,13 @@ void setup()
   /* SD */
   pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
   pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
-  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
+  if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
         Serial.println(F("SD OK"));
-  else  Serial.println(F("SD init FAIL"));
+        sdMounted = true;
+  } else {
+        Serial.println(F("SD init FAIL"));
+        sdMounted = false;
+  }
 
   /* Wi-Fi → NTP (one-shot) */
   WiFi.mode(WIFI_STA);
