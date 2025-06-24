@@ -123,8 +123,9 @@ void setup()
   Serial.println(F("LoRa ready"));
 
   /* SD */
-  pinMode(PIN_SD_CS, OUTPUT); digitalWrite(PIN_SD_CS, HIGH);
+  pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
   pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
+  pinMode(PIN_SD_CD, INPUT_PULLUP);            // LOW = card present
   digitalWrite(PIN_SD_LED, HIGH);
   if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25)))
         Serial.println(F("SD OK"));
