@@ -27,7 +27,7 @@ constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
 
 /* ---------------- timing ------------------------ */
-constexpr uint16_t SLOT_SECONDS = 300;            // 10-minute slots
+constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
 
 /* ---------------- LoRa parameters --------------- */
 constexpr float    LORA_FREQ_MHZ = 915.0;
