@@ -47,8 +47,8 @@ const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
 // Channel configuration for each node.  Fill in the Channel ID and optional
 // Read API Key for every ThingSpeak channel if it is private.  Field 5 of each
 // node's channel controls its measurement interval.
-const char* THINGSPEAK_CHANNEL_IDS[4] = { "000000", "000000", "000000", "000000" };
-const char* THINGSPEAK_READ_KEYS[4]   = { "", "", "", "" };
+const char* THINGSPEAK_CHANNEL_IDS[4] = { "2996904", "2996908", "2996910", "2996911" };
+const char* THINGSPEAK_READ_KEYS[4]   = { "5TWQ9NZJJ0OLH1RX", "NL1Q3LX45QAL6ZPO", "93BQ474ECNSR5S6G", "8E2IZ45B3BFOGAEI" };
 
 /* -------- globals -------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
