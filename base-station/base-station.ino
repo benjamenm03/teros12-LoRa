@@ -116,17 +116,27 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
   String p(payload);
   p.replace("\r", "");
   p.replace("\n", "");
-  char delim = p.indexOf(',') >= 0 ? ',' : '+';  // support comma or plus
+
+  // payload looks like "<raw values>,<battery>" where raw values are
+  // separated with '+' (or commas on some sensors)
+  int lastComma = p.lastIndexOf(',');
+  if (lastComma < 0) return false;                // malformed payload
+
+  String battery = p.substring(lastComma + 1);
+  String raw     = p.substring(0, lastComma);
+
+  char d = raw.indexOf(',') >= 0 ? ',' : '+';    // prefer comma if present
 
   String parts[4];
   uint8_t count = 0;
   int start = 0;
-  while (start < p.length() && count < 4) {
-    int sep = p.indexOf(delim, start);
-    if (sep == -1) sep = p.length();
-    parts[count++] = p.substring(start, sep);
+  while (start < raw.length() && count < 3) {
+    int sep = raw.indexOf(d, start);
+    if (sep == -1) sep = raw.length();
+    parts[count++] = raw.substring(start, sep);
     start = sep + 1;
   }
+  parts[count++] = battery;                      // 4th field is battery
 
   WiFiClient client;
   HTTPClient http;
