@@ -8,6 +8,10 @@ Base station events are appended to `events.csv` on the SD card. Each entry
 records the event type, node identifier, the Unix timestamp and a formatted UTC
 time string so activity can be tracked later.
 
+Sensor readings are saved to `soil.csv` with the columns:
+`timestamp,battery,node_id,<values…>` where the battery column comes from the
+PowerBoost's LBO pin (0 V when below about 3.2 V).
+
 ## Cloud logging with ThingSpeak
 
 The base station can optionally mirror each row from `soil.csv` to one of
@@ -27,5 +31,7 @@ reflects when the measurement was taken rather than when it was uploaded.
 1. `field1` – first value from the Teros payload
 2. `field2` – second value from the payload
 3. `field3` – third value from the payload
+
+4. `field4` – node battery voltage (0 if below 0.5&nbsp;V)
 
 Additional payload values, if present, are uploaded to subsequent fields.

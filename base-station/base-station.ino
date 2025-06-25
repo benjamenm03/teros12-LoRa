@@ -27,6 +27,7 @@ constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
 constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
 constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
 constexpr uint8_t PIN_SD_LED    = D3;    // GPIO0  (ON = SD busy)
+constexpr uint8_t PIN_LBO       = A0;    // battery monitor (PowerBoost LBO)
 
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
@@ -88,6 +89,18 @@ inline void setEpoch32(uint32_t e) {
   settimeofday(&tv, nullptr);
 }
 
+/* -------- read battery via PowerBoost LBO -------- */
+float readBattery() {
+  int raw = analogRead(PIN_LBO);
+#ifdef ESP8266
+  float v = raw * (3.3 / 1023.0);
+#else
+  float v = raw * (5.0 / 1023.0);
+#endif
+  if (v < 0.5) v = 0.0;
+  return v;
+}
+
 // Format a UTC timestamp for ThingSpeak's `created_at` parameter
 void iso8601Utc(char *out, size_t len, uint32_t epoch);
 
@@ -103,17 +116,27 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
   String p(payload);
   p.replace("\r", "");
   p.replace("\n", "");
-  char delim = p.indexOf(',') >= 0 ? ',' : '+';  // support comma or plus
+
+  // payload looks like "<raw values>,<battery>" where raw values are
+  // separated with '+' (or commas on some sensors)
+  int lastComma = p.lastIndexOf(',');
+  if (lastComma < 0) return false;                // malformed payload
+
+  String battery = p.substring(lastComma + 1);
+  String raw     = p.substring(0, lastComma);
+
+  char d = raw.indexOf(',') >= 0 ? ',' : '+';    // prefer comma if present
 
   String parts[4];
   uint8_t count = 0;
   int start = 0;
-  while (start < p.length() && count < 4) {
-    int sep = p.indexOf(delim, start);
-    if (sep == -1) sep = p.length();
-    parts[count++] = p.substring(start, sep);
+  while (start < raw.length() && count < 3) {
+    int sep = raw.indexOf(d, start);
+    if (sep == -1) sep = raw.length();
+    parts[count++] = raw.substring(start, sep);
     start = sep + 1;
   }
+  parts[count++] = battery;                      // 4th field is battery
 
   WiFiClient client;
   HTTPClient http;
@@ -149,9 +172,15 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
     return;
   }
 
+  String p(payload);
+  int lastComma = p.lastIndexOf(',');
+  String battery = p.substring(lastComma + 1);
+  String rest    = p.substring(0, lastComma);
+
   f.print(sampleEpoch); f.print(',');
-  f.print(nodeId);      f.print(',');
-  f.println(payload);
+  f.print(battery);    f.print(',');
+  f.print(nodeId);     f.print(',');
+  f.println(rest);
   f.sync();
   f.close();
   digitalWrite(PIN_SD_LED, LOW);
@@ -239,6 +268,7 @@ void setup()
   pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
   pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
   pinMode(PIN_SD_CD, INPUT_PULLUP);            // LOW = card present
+  pinMode(PIN_LBO, INPUT);
   digitalWrite(PIN_SD_LED, HIGH);
   if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
         Serial.println(F("SD OK"));

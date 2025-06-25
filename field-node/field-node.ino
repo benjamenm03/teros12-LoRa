@@ -25,6 +25,7 @@ constexpr uint8_t PIN_LORA_CS   = 10;
 constexpr uint8_t PIN_LORA_RST  = 9;
 constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
+constexpr uint8_t PIN_LBO       = A0;             // battery monitor (PowerBoost LBO)
 
 /* ---------------- timing ------------------------ */
 constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
@@ -46,6 +47,7 @@ bool firstSlot = true;                            // ← skip offset once
 struct PendingRec {
   uint32_t ts;
   String   data;
+  float    batt;
 };
 
 constexpr uint8_t MAX_BACKLOG = 10;
@@ -142,6 +144,17 @@ String readTeros() {
   return line;
 }
 
+/* ---- read battery via PowerBoost LBO ---- */
+float readBattery() {
+  int raw = analogRead(PIN_LBO);
+  float v = raw * (5.0 / 1023.0);
+  if (v < 0.5) v = 0.0;
+#if defined(SERIAL_DEBUG)
+  Serial.print(F("  Battery: ")); Serial.print(v); Serial.println(F(" V"));
+#endif
+  return v;
+}
+
 /* ---- initial clock sync ---- */
 void syncClock() {
   char req[] = "REQT:X"; req[5] = '0' + NODE_ID;
@@ -173,6 +186,7 @@ void setup() {
   Serial.print(F("LoRa ready on ")); Serial.print(LORA_FREQ_MHZ); Serial.println(F(" MHz"));
 
   pinMode(PIN_SDILINE, INPUT_PULLUP);
+  pinMode(PIN_LBO, INPUT);
   syncClock();
 }
 
@@ -192,11 +206,13 @@ void loop() {
 #endif
     /* 1. measure */
     String reading = readTeros();
+    float  batt    = readBattery();
     tickWhileAwake();
 
     if (backlogCount < MAX_BACKLOG) {
       backlog[backlogCount].ts   = epochNow;
       backlog[backlogCount].data = reading;
+      backlog[backlogCount].batt = batt;
       backlogCount++;
     }
 
@@ -218,6 +234,8 @@ void loop() {
       msg += backlog[i].ts;
       msg += ',';
       msg += backlog[i].data;
+      msg += ',';
+      msg += String(backlog[i].batt, 2);
     }
 
     char pkt[240];
@@ -232,7 +250,10 @@ void loop() {
 #if defined(SERIAL_DEBUG)
       Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
 #endif
-      for (uint8_t i = 0; i < backlogCount; ++i) backlog[i].data = "";
+      for (uint8_t i = 0; i < backlogCount; ++i) {
+        backlog[i].data = "";
+        backlog[i].batt = 0;
+      }
       backlogCount = 0;
     } else {
 #if defined(SERIAL_DEBUG)
