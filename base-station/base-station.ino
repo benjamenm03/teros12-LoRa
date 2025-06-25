@@ -7,7 +7,7 @@
  *  • Messages
  *        "REQT:<id>"               → "TIME:<epoch32>"
  *        "DATA:<id>,<ts>,<val>[|<ts>,<val>]" → append CSV, wait 5 s
- *                                 → "ACKTIME:<epoch32>"
+ *                                 → "ACKTIME:<epoch32>,<interval>"
 *********************************************************************/
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
@@ -44,12 +44,21 @@ const char* THINGSPEAK_API_KEYS[4] = {
   "D4J924RZTI9FE4SL"
 };
 const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
+// Channel configuration for each node.  Fill in the Channel ID and optional
+// Read API Key for every ThingSpeak channel if it is private.  Field 5 of each
+// node's channel controls its measurement interval.
+const char* THINGSPEAK_CHANNEL_IDS[4] = { "000000", "000000", "000000", "000000" };
+const char* THINGSPEAK_READ_KEYS[4]   = { "", "", "", "" };
 
 /* -------- globals -------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat   sd;
 // SD logger no longer keeps the file open persistently
 WiFiUDP ntpUDP;
+
+// sampling interval (seconds) per node (1–4).  Defaults to 10 minutes
+uint32_t slotSeconds[4] = {600, 600, 600, 600};
+uint32_t nextCtrlCheck = 0;       // epoch to poll ThingSpeak again
 
 /* -------- tiny NTP helper -------- */
 const uint32_t NTP2UNIX = 2'208'988'800UL;      // 1900‒>1970 offset
@@ -211,6 +220,41 @@ void iso8601Utc(char *out, size_t len, uint32_t epoch)
            tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
+/* -------- read interval from ThingSpeak channel (field 5) -------- */
+bool fetchSlotMinutes(uint8_t idx, uint8_t &out)
+{
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (idx >= 4) return false;
+
+  const char* ch = THINGSPEAK_CHANNEL_IDS[idx];
+  if (!ch || !*ch) return false;
+
+  String url = String(THINGSPEAK_HOST) + "/channels/" + ch + "/fields/5/last.txt";
+  const char* key = THINGSPEAK_READ_KEYS[idx];
+  if (key && *key) {
+    url += "?api_key=";
+    url += key;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  if (!http.begin(client, url)) return false;
+  int code = http.GET();
+  String body = http.getString();
+  http.end();
+  if (code != 200) return false;
+
+  int val = body.toInt();
+  if (val < 5 || val > 60 || val % 5 != 0) return false;
+  out = static_cast<uint8_t>(val);
+  return true;
+}
+
+inline void scheduleNextCheck(uint32_t now)
+{
+  nextCtrlCheck = (((now / 1800) + 1) * 1800) - 60;   // 1 min before each half hour
+}
+
 /* -------- event logger -------- */
 void logEvent(const char* type, uint8_t id, uint32_t epoch, const char* info = nullptr)
 {
@@ -302,15 +346,28 @@ void setup()
     setEpoch32(ep);
     Serial.printf("Clock synced: %" PRIu32 "\n", ep);
     logEvent("NTP", 0, ep);
+    scheduleNextCheck(ep);
   } else {
     Serial.println(F("! Wi-Fi failed – unsynced clock"));
     logEvent("NOWIFI", 0, nowEpoch32());
+    scheduleNextCheck(nowEpoch32());
   }
 }
 
 /* ======================  LOOP  ====================== */
 void loop()
 {
+  uint32_t now = nowEpoch32();
+  if (now >= nextCtrlCheck) {
+    uint8_t m;
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (fetchSlotMinutes(i, m)) {
+        slotSeconds[i] = static_cast<uint32_t>(m) * 60UL;
+        Serial.printf("Node %u interval set to %u s\n", i + 1, slotSeconds[i]);
+      }
+    }
+    scheduleNextCheck(now);
+  }
   /* LoRa inbox */
   if (rf95.available()) {
     uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
@@ -343,8 +400,10 @@ void loop()
         }
 
         delay(5000);
-        char ack[28];
-        snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
+        char ack[40];
+        uint32_t interval = slotSeconds[nodeId - 1];
+        snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32 ",%" PRIu32,
+                 nowEpoch32(), interval);
         rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
         rf95.waitPacketSent();
         Serial.printf("→ %s\n", ack);

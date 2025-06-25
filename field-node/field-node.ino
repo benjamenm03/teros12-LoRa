@@ -3,7 +3,8 @@
  *  -----------------------------------------------------------------
  *  • Teros-12 on D2  (SDI-12)
  *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
- *  • Samples exactly on every Unix multiple of SLOT_SECONDS (600 s)
+ *  • Samples exactly on every Unix multiple of the configurable slot
+ *    interval (default 600 s)
  *  • Radio sleeps during every MCU watchdog nap
  *  • Retries up to 10 unsent records if ACK not received
  *  • **First slot after boot skips the node-offset delay**
@@ -28,7 +29,7 @@ constexpr uint8_t PIN_SDILINE   = 2;
 constexpr uint8_t PIN_LBO       = A0;             // battery monitor (PowerBoost LBO)
 
 /* ---------------- timing ------------------------ */
-constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
+uint32_t slotSeconds = 600;          // default to 10-minute slots
 
 /* ---------------- LoRa parameters --------------- */
 constexpr float    LORA_FREQ_MHZ = 915.0;
@@ -196,7 +197,7 @@ void loop() {
   if (epochNow == 0) { delay(250); return; }
 
   static uint32_t lastSlot = 0;
-  uint32_t slotIdx = epochNow / SLOT_SECONDS;
+  uint32_t slotIdx = epochNow / slotSeconds;
 
   if (slotIdx != lastSlot) {                      // *** new slot
     lastSlot = slotIdx;
@@ -245,10 +246,16 @@ void loop() {
     /* 4. ACK wait */
     String rsp;
     if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
+      int comma = rsp.indexOf(',');
       epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
+      if (comma > 8) {
+        slotSeconds = strtoul(rsp.c_str() + comma + 1, nullptr, 10);
+      }
       millisRef = millis();
 #if defined(SERIAL_DEBUG)
       Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
+      Serial.print(F("  New interval: ")); Serial.print(slotSeconds);
+      Serial.println(F(" s"));
 #endif
       for (uint8_t i = 0; i < backlogCount; ++i) {
         backlog[i].data = "";
@@ -267,7 +274,7 @@ void loop() {
   }
 
   /* 5. long nap until next slot */
-  uint32_t nextSlot = (slotIdx + 1) * SLOT_SECONDS;
+  uint32_t nextSlot = (slotIdx + 1) * slotSeconds;
   if (nextSlot > epochNow)
     announceSleep(F("until next slot"), nextSlot - epochNow, true);
 }

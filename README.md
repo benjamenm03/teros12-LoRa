@@ -35,3 +35,16 @@ reflects when the measurement was taken rather than when it was uploaded.
 4. `field4` – node battery voltage (0 if below 0.5&nbsp;V)
 
 Additional payload values, if present, are uploaded to subsequent fields.
+
+### Changing the sample interval
+
+Field&nbsp;5 of each node’s ThingSpeak channel controls its measurement
+interval. Enter a number from **5** to **60** (multiples of five) into that
+field to set the interval in minutes.  Fill in the `THINGSPEAK_CHANNEL_IDS`
+array in `base-station/base-station.ino` with the channel IDs for your nodes and
+the matching `THINGSPEAK_READ_KEYS` if the channels are private.
+
+The base station polls every channel one minute before each half‑hour mark and
+includes the selected interval (in seconds) in the `ACKTIME` response sent after
+each upload: `ACKTIME:<epoch>,<interval>`. Field nodes update their schedule
+accordingly and default to 10‑minute (600&nbsp;s) slots on boot.
