@@ -68,7 +68,8 @@ void sleepSeconds_raw(uint16_t sec) {
   if (sec >= 1)  { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); epochNow += 1; }
 }
 
-void announceSleep(const __FlashStringHelper *why, uint32_t sec, bool radioSleep) {
+void announceSleep(const __FlashStringHelper *why, uint32_t sec,
+                   bool radioSleep, bool wakeAfter = true) {
 #if defined(SERIAL_DEBUG)
   Serial.print(F("  Sleeping ")); Serial.print(sec);
   Serial.print(F(" s  ("));       Serial.print(why); Serial.println(F(")"));
@@ -76,7 +77,7 @@ void announceSleep(const __FlashStringHelper *why, uint32_t sec, bool radioSleep
 #endif
   if (radioSleep) rf95.sleep();
   sleepSeconds_raw(static_cast<uint16_t>(sec));
-  if (radioSleep) rf95.setModeRx();
+  if (radioSleep && wakeAfter) rf95.setModeRx();
 }
 
 void deepSleepForever() {
@@ -210,8 +211,8 @@ void loop() {
     Serial.print(F("  (epoch ")); Serial.print(epochNow); Serial.println(F(") ==="));
 #endif
     /* 1. measure */
-    String reading = readTeros();
     float  batt    = readBattery();
+    String reading = readTeros();
     tickWhileAwake();
 
     if (backlogCount < MAX_BACKLOG) {
@@ -229,7 +230,7 @@ void loop() {
       firstSlot = false;
     } else {
       uint16_t offset = 45 * NODE_ID;        // 30 s for node-1
-      announceSleep(F("node offset"), offset, true);
+      announceSleep(F("node offset"), offset, true, true);
     }
 
     /* 3. TX */
@@ -274,5 +275,5 @@ void loop() {
   /* 5. long nap until next slot */
   uint32_t nextSlot = (slotIdx + 1) * SLOT_SECONDS;
   if (nextSlot > epochNow)
-    announceSleep(F("until next slot"), nextSlot - epochNow, true);
+    announceSleep(F("until next slot"), nextSlot - epochNow, true, false);
 }
