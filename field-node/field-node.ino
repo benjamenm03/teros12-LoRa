@@ -35,7 +35,13 @@ constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
 constexpr uint8_t PIN_LBO       = A0;             // battery monitor (voltage divider)
 
-constexpr float    ADC_REF_V    = 1.1;            // Nano Every internal reference
+#if defined(__AVR_ATmega4809__)
+constexpr float    ADC_REF_V    = 1.024;         // Nano Every internal reference
+#define ADC_REFERENCE INTERNAL
+#else
+constexpr float    ADC_REF_V    = 1.1;           // classic Nano reference
+#define ADC_REFERENCE INTERNAL1V1
+#endif
 constexpr float    BATTERY_R1   = 470000.0;       // ohms to VBAT
 constexpr float    BATTERY_R2   = 100000.0;       // ohms to ground
 
@@ -195,7 +201,7 @@ void setup() {
   Serial.println(F("--------------------------------------------"));
   Serial.print  (F("Node ")); Serial.println(NODE_ID);
 
-  analogReference(INTERNAL1V1);                // use stable internal reference
+  analogReference(ADC_REFERENCE);              // use stable internal reference
   analogRead(PIN_LBO);                         // throw away first reading
 
   pinMode(PIN_LORA_RST, OUTPUT);
