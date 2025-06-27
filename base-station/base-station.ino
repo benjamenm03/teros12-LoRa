@@ -27,7 +27,7 @@ constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
 constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
 constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
 constexpr uint8_t PIN_SD_LED    = D3;    // GPIO0  (ON = SD busy)
-constexpr uint8_t PIN_LBO       = A0;    // battery monitor (PowerBoost LBO)
+constexpr uint8_t PIN_LBO       = A0;    // battery monitor (direct battery +)
 
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
@@ -89,9 +89,14 @@ inline void setEpoch32(uint32_t e) {
   settimeofday(&tv, nullptr);
 }
 
-/* -------- read battery via PowerBoost LBO -------- */
+/* -------- read battery via analog pin -------- */
 float readBattery() {
-  int raw = analogRead(PIN_LBO);
+  const uint8_t SAMPLES = 8;
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < SAMPLES; ++i) {
+    sum += analogRead(PIN_LBO);
+  }
+  float raw = sum / static_cast<float>(SAMPLES);
 #ifdef ESP8266
   float v = raw * (3.3 / 1023.0);
 #else

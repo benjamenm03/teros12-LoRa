@@ -9,8 +9,9 @@ records the event type, node identifier, the Unix timestamp and a formatted UTC
 time string so activity can be tracked later.
 
 Sensor readings are saved to `soil.csv` with the columns:
-`timestamp,battery,node_id,<values…>` where the battery column comes from the
-PowerBoost's LBO pin (0 V when below about 3.2 V).
+`timestamp,battery,node_id,<values…>` where the battery column comes from an
+oversampled analog reading on pin A0 wired directly to the battery (reported as 0 when below
+about 0.5&nbsp;V). The voltage is sampled right after each wake-up so the LoRa radio's current draw does not skew the measurement.
 
 ## Cloud logging with ThingSpeak
 
