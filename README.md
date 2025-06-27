@@ -33,6 +33,6 @@ reflects when the measurement was taken rather than when it was uploaded.
 2. `field2` – second value from the payload
 3. `field3` – third value from the payload
 
-4. `field4` – node battery voltage (0 if below 0.5&nbsp;V)
+4. `field4` – node battery voltage
 
 Additional payload values, if present, are uploaded to subsequent fields.

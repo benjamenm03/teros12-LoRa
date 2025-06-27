@@ -97,7 +97,6 @@ float readBattery() {
 #else
   float v = raw * (5.0 / 1023.0);
 #endif
-  if (v < 0.5) v = 0.0;
   return v;
 }
 
