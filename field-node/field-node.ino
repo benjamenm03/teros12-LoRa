@@ -4,14 +4,22 @@
  *  • Teros-12 on D2  (SDI-12)
  *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
  *  • Samples exactly on every Unix multiple of SLOT_SECONDS (600 s)
- *  • Radio sleeps during every MCU watchdog nap
+ *  • Radio sleeps while the MCU delays between slots
  *  • Retries up to 10 unsent records if ACK not received
  *  • **First slot after boot skips the node-offset delay**
 *********************************************************************/
 #include <SPI.h>
 #include <RH_RF95.h>
+#if defined(__AVR_ATmega4809__)
+#define TIMER_IN_USE_STR "micros()"
+#define TIMER_INT_TYPE uint32_t
+#define TIMER_INT_SIZE 32
+#define READTIME micros()
+#define PRESCALE_IN_USE 1
+#define PRESCALE_IN_USE_STR "micros"
+#define TICKS_PER_SECOND 1000000
+#endif
 #include <SDI12.h>
-#include <LowPower.h>
 #include <inttypes.h>
 
 /* ---------------- console output ---------------- */
@@ -66,10 +74,11 @@ void tickWhileAwake() {
 }
 
 void sleepSeconds_raw(uint16_t sec) {
-  while (sec >= 8) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); epochNow += 8; sec -= 8; }
-  if (sec >= 4)  { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); epochNow += 4; sec -= 4; }
-  if (sec >= 2)  { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); epochNow += 2; sec -= 2; }
-  if (sec >= 1)  { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); epochNow += 1; }
+  uint32_t start = millis();
+  while ((millis() - start) < sec * 1000UL) {
+    delay(50);
+  }
+  epochNow += sec;
 }
 
 void announceSleep(const __FlashStringHelper *why, uint32_t sec, bool radioSleep) {
@@ -89,7 +98,7 @@ void deepSleepForever() {
 #endif
   rf95.sleep();
   for (;;) {
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+    delay(1000);
   }
 }
 
