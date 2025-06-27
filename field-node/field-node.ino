@@ -1,5 +1,5 @@
 /**********************************************************************
- *  SOIL-MOISTURE  FIELD NODE – Arduino Nano Classic  (DEBUG VERSION)
+ *  SOIL-MOISTURE  FIELD NODE – Arduino Nano Every  (DEBUG VERSION)
  *  -----------------------------------------------------------------
  *  • Teros-12 on D2  (SDI-12)
  *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
@@ -25,7 +25,11 @@ constexpr uint8_t PIN_LORA_CS   = 10;
 constexpr uint8_t PIN_LORA_RST  = 9;
 constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
-constexpr uint8_t PIN_LBO       = A0;             // battery monitor (PowerBoost LBO)
+constexpr uint8_t PIN_LBO       = A0;             // battery monitor (voltage divider)
+
+constexpr float    ADC_REF_V    = 1.1;            // Nano Every internal reference
+constexpr float    BATTERY_R1   = 470000.0;       // ohms to VBAT
+constexpr float    BATTERY_R2   = 100000.0;       // ohms to ground
 
 /* ---------------- timing ------------------------ */
 constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
@@ -144,15 +148,21 @@ String readTeros() {
   return line;
 }
 
-/* ---- read battery via PowerBoost LBO ---- */
+/* ---- read battery via A0 voltage divider ---- */
 float readBattery() {
-  int raw = analogRead(PIN_LBO);
-  float v = raw * (5.0 / 1023.0);
-  if (v < 0.5) v = 0.0;
+  const uint8_t SAMPLES = 4;
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < SAMPLES; ++i) {
+    sum += analogRead(PIN_LBO);
+    delay(2);
+  }
+  float raw = sum / static_cast<float>(SAMPLES);
+  float v = raw * (ADC_REF_V / 1023.0);
+  float batt = v * ((BATTERY_R1 + BATTERY_R2) / BATTERY_R2);
 #if defined(SERIAL_DEBUG)
-  Serial.print(F("  Battery: ")); Serial.print(v); Serial.println(F(" V"));
+  Serial.print(F("  Battery: ")); Serial.print(batt); Serial.println(F(" V"));
 #endif
-  return v;
+  return batt;
 }
 
 /* ---- initial clock sync ---- */
@@ -175,6 +185,9 @@ void setup() {
   delay(150);
   Serial.println(F("--------------------------------------------"));
   Serial.print  (F("Node ")); Serial.println(NODE_ID);
+
+  analogReference(INTERNAL1V1);                // use stable internal reference
+  analogRead(PIN_LBO);                         // throw away first reading
 
   pinMode(PIN_LORA_RST, OUTPUT);
   digitalWrite(PIN_LORA_RST, LOW);  delay(10);

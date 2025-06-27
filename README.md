@@ -9,8 +9,9 @@ records the event type, node identifier, the Unix timestamp and a formatted UTC
 time string so activity can be tracked later.
 
 Sensor readings are saved to `soil.csv` with the columns:
-`timestamp,battery,node_id,<values…>` where the battery column comes from the
-PowerBoost's LBO pin (0 V when below about 3.2 V).
+`timestamp,battery,node_id,<values…>` where the battery column is the node's
+battery voltage measured through a resistor divider (470 kΩ to the battery and
+100 kΩ to ground) using the MCU's internal reference.
 
 ## Cloud logging with ThingSpeak
 
