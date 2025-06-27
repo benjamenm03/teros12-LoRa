@@ -25,7 +25,7 @@ constexpr uint8_t PIN_LORA_CS   = 10;
 constexpr uint8_t PIN_LORA_RST  = 9;
 constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
-constexpr uint8_t PIN_LBO       = A0;             // battery monitor (PowerBoost LBO)
+constexpr uint8_t PIN_LBO       = A0;             // battery monitor divider
 
 /* ---------------- timing ------------------------ */
 constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
@@ -144,11 +144,18 @@ String readTeros() {
   return line;
 }
 
-/* ---- read battery via PowerBoost LBO ---- */
+/* ---- read battery via voltage divider on A0 ---- */
 float readBattery() {
-  int raw = analogRead(PIN_LBO);
-  float v = raw * (5.0 / 1023.0);
-  if (v < 0.5) v = 0.0;
+  const uint8_t SAMPLES = 64;               // oversampling for extra resolution
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < SAMPLES; ++i) {
+    sum += analogRead(PIN_LBO);
+  }
+  float raw = sum / static_cast<float>(SAMPLES);
+
+  constexpr float VREF = 1.1;               // internal reference voltage
+  constexpr float DIV_RATIO = (470000.0 + 100000.0) / 100000.0;  // 5.7x divider
+  float v = raw * (VREF / 1023.0) * DIV_RATIO;
 #if defined(SERIAL_DEBUG)
   Serial.print(F("  Battery: ")); Serial.print(v); Serial.println(F(" V"));
 #endif
@@ -175,6 +182,9 @@ void setup() {
   delay(150);
   Serial.println(F("--------------------------------------------"));
   Serial.print  (F("Node ")); Serial.println(NODE_ID);
+
+  analogReference(INTERNAL);        // use 1.1 V reference for battery read
+  analogRead(PIN_LBO);              // dummy read to settle reference
 
   pinMode(PIN_LORA_RST, OUTPUT);
   digitalWrite(PIN_LORA_RST, LOW);  delay(10);

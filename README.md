@@ -9,8 +9,9 @@ records the event type, node identifier, the Unix timestamp and a formatted UTC
 time string so activity can be tracked later.
 
 Sensor readings are saved to `soil.csv` with the columns:
-`timestamp,battery,node_id,<values…>` where the battery column comes from the
-PowerBoost's LBO pin (0 V when below about 3.2 V).
+`timestamp,battery,node_id,<values…>` where the battery column represents the
+node's LiPo voltage measured through a 470&nbsp;kΩ/100&nbsp;kΩ divider on A0
+using the Nano's internal 1.1&nbsp;V reference.
 
 ## Cloud logging with ThingSpeak
 
@@ -32,6 +33,6 @@ reflects when the measurement was taken rather than when it was uploaded.
 2. `field2` – second value from the payload
 3. `field3` – third value from the payload
 
-4. `field4` – node battery voltage (0 if below 0.5&nbsp;V)
+4. `field4` – node battery voltage in volts
 
 Additional payload values, if present, are uploaded to subsequent fields.
