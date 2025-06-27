@@ -25,7 +25,7 @@ constexpr uint8_t PIN_LORA_CS   = 10;
 constexpr uint8_t PIN_LORA_RST  = 9;
 constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
-constexpr uint8_t PIN_LBO       = A0;             // battery monitor (PowerBoost LBO)
+constexpr uint8_t PIN_LBO       = A0;             // battery monitor (direct battery +)
 
 /* ---------------- timing ------------------------ */
 constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
@@ -144,9 +144,14 @@ String readTeros() {
   return line;
 }
 
-/* ---- read battery via PowerBoost LBO ---- */
+/* ---- read battery via analog pin ---- */
 float readBattery() {
-  int raw = analogRead(PIN_LBO);
+  const uint8_t SAMPLES = 8;
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < SAMPLES; ++i) {
+    sum += analogRead(PIN_LBO);
+  }
+  float raw = sum / static_cast<float>(SAMPLES);
   float v = raw * (5.0 / 1023.0);
   if (v < 0.5) v = 0.0;
 #if defined(SERIAL_DEBUG)
