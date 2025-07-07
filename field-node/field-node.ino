@@ -82,17 +82,17 @@ void announceSleep(const __FlashStringHelper *why, uint32_t sec,
   rtcAlarmFired = false;
   DateTime now = rtc.now();
   DateTime alarm(now.unixtime() + sec);
-  rtc.clearAlarm(DS3231_ALARM_1);
+  rtc.disableAlarm(1);
+  rtc.clearAlarm(1);
   rtc.setAlarm1(alarm, DS3231_A1_Second);
-  rtc.alarmInterrupt(DS3231_ALARM_1, true);
   pinMode(PIN_RTC_INT, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_RTC_INT), rtcWakeISR, FALLING);
   while (!rtcAlarmFired) {
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
   }
   detachInterrupt(digitalPinToInterrupt(PIN_RTC_INT));
-  rtc.alarmInterrupt(DS3231_ALARM_1, false);
-  rtc.clearAlarm(DS3231_ALARM_1);
+  rtc.clearAlarm(1);
+  rtc.disableAlarm(1);
   epochNow = rtc.now().unixtime();
   if (radioSleep && wakeAfter) rf95.setModeRx();
 }
@@ -215,10 +215,10 @@ void setup() {
   pinMode(PIN_RTC_32K, INPUT);
   Wire.begin();
   rtc.begin();
-  rtc.disableAlarm(DS3231_ALARM_1);
-  rtc.disableAlarm(DS3231_ALARM_2);
-  rtc.clearAlarm(DS3231_ALARM_1);
-  rtc.clearAlarm(DS3231_ALARM_2);
+  rtc.disableAlarm(1);
+  rtc.disableAlarm(2);
+  rtc.clearAlarm(1);
+  rtc.clearAlarm(2);
   rtc.writeSqwPinMode(DS3231_OFF);
   syncClock();
 }
