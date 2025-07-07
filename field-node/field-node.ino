@@ -12,6 +12,7 @@
 #include <RH_RF95.h>
 #include <SDI12.h>
 #include <LowPower.h>
+#include <avr/interrupt.h>
 #include <Wire.h>
 #include <RTClib.h>
 #include <inttypes.h>
@@ -66,7 +67,7 @@ void tickWhileAwake() {
 
 volatile bool rtcAlarmFired = false;
 
-void rtcWakeISR() {
+ISR(PCINT0_vect) {
   rtcAlarmFired = true;
 }
 
@@ -86,11 +87,14 @@ void announceSleep(const __FlashStringHelper *why, uint32_t sec,
   rtc.clearAlarm(1);
   rtc.setAlarm1(alarm, DS3231_A1_Second);
   pinMode(PIN_RTC_INT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_RTC_INT), rtcWakeISR, FALLING);
+  PCMSK0 |= _BV(PCINT0);   // enable pin change for PB0 (D8)
+  PCIFR  |= _BV(PCIF0);    // clear any pending
+  PCICR  |= _BV(PCIE0);    // enable interrupt for PCINT[7:0]
   while (!rtcAlarmFired) {
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
   }
-  detachInterrupt(digitalPinToInterrupt(PIN_RTC_INT));
+  PCICR  &= ~_BV(PCIE0);   // disable after wake
+  PCMSK0 &= ~_BV(PCINT0);
   rtc.clearAlarm(1);
   rtc.disableAlarm(1);
   epochNow = rtc.now().unixtime();
