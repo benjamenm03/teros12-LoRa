@@ -4,7 +4,7 @@
  *  • Teros-12 on D2  (SDI-12)
  *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
  *  • Samples exactly on every Unix multiple of SLOT_SECONDS (600 s)
- *  • Radio sleeps during every MCU watchdog nap
+ *  • RTC DS3231 handles timing and wake-up alarms
  *  • Retries up to 10 unsent records if ACK not received
  *  • **First slot after boot skips the node-offset delay**
 *********************************************************************/
@@ -12,6 +12,8 @@
 #include <RH_RF95.h>
 #include <SDI12.h>
 #include <LowPower.h>
+#include <Wire.h>
+#include <RTClib.h>
 #include <inttypes.h>
 
 /* ---------------- console output ---------------- */
@@ -26,6 +28,9 @@ constexpr uint8_t PIN_LORA_RST  = 9;
 constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
 constexpr uint8_t PIN_SDILINE   = 2;
 constexpr uint8_t PIN_LBO       = A0;             // battery monitor (direct battery +)
+constexpr uint8_t PIN_RTC_INT  = 8;              // SQW alarm output
+constexpr uint8_t PIN_RTC_RST  = 7;              // /RST from RTC (unused)
+constexpr uint8_t PIN_RTC_32K  = 6;              // 32kHz output (optional)
 
 /* ---------------- timing ------------------------ */
 constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
@@ -37,10 +42,10 @@ constexpr int8_t   LORA_TX_PWR   = 13;
 /* ---------------- objects ----------------------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SDI12   sdi(PIN_SDILINE);
+RTC_DS3231 rtc;
 
 /* ---------------- globals ----------------------- */
 volatile uint32_t epochNow = 0;                   // Unix seconds
-uint32_t millisRef = 0;
 bool firstSlot = true;                            // ← skip offset once
 
 /* ---- resend buffer ---- */
@@ -56,16 +61,13 @@ uint8_t backlogCount = 0;                         // number of unsent records
 
 /* ================ helper functions ============== */
 void tickWhileAwake() {
-  uint32_t now = millis();
-  epochNow += (now - millisRef) / 1000UL;
-  millisRef  = now;
+  epochNow = rtc.now().unixtime();
 }
 
-void sleepSeconds_raw(uint16_t sec) {
-  while (sec >= 8) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); epochNow += 8; sec -= 8; }
-  if (sec >= 4)  { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); epochNow += 4; sec -= 4; }
-  if (sec >= 2)  { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); epochNow += 2; sec -= 2; }
-  if (sec >= 1)  { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); epochNow += 1; }
+volatile bool rtcAlarmFired = false;
+
+void rtcWakeISR() {
+  rtcAlarmFired = true;
 }
 
 void announceSleep(const __FlashStringHelper *why, uint32_t sec,
@@ -75,8 +77,23 @@ void announceSleep(const __FlashStringHelper *why, uint32_t sec,
   Serial.print(F(" s  ("));       Serial.print(why); Serial.println(F(")"));
   Serial.flush();
 #endif
+  if (sec == 0) return;
   if (radioSleep) rf95.sleep();
-  sleepSeconds_raw(static_cast<uint16_t>(sec));
+  rtcAlarmFired = false;
+  DateTime now = rtc.now();
+  DateTime alarm(now.unixtime() + sec);
+  rtc.clearAlarm(DS3231_ALARM_1);
+  rtc.setAlarm1(alarm, DS3231_A1_Second);
+  rtc.alarmInterrupt(DS3231_ALARM_1, true);
+  pinMode(PIN_RTC_INT, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_RTC_INT), rtcWakeISR, FALLING);
+  while (!rtcAlarmFired) {
+    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  }
+  detachInterrupt(digitalPinToInterrupt(PIN_RTC_INT));
+  rtc.alarmInterrupt(DS3231_ALARM_1, false);
+  rtc.clearAlarm(DS3231_ALARM_1);
+  epochNow = rtc.now().unixtime();
   if (radioSleep && wakeAfter) rf95.setModeRx();
 }
 
@@ -168,7 +185,7 @@ void syncClock() {
   String pkt;
   if (loraWait(pkt, 5000) && pkt.startsWith("TIME:")) {
     epochNow  = strtoul(pkt.c_str() + 5, nullptr, 10);
-    millisRef = millis();
+    rtc.adjust(DateTime(epochNow));
 #if defined(SERIAL_DEBUG)
     Serial.print(F("  Clock set to ")); Serial.println(epochNow);
 #endif
@@ -193,6 +210,16 @@ void setup() {
 
   pinMode(PIN_SDILINE, INPUT_PULLUP);
   pinMode(PIN_LBO, INPUT);
+  pinMode(PIN_RTC_INT, INPUT_PULLUP);
+  pinMode(PIN_RTC_RST, INPUT);
+  pinMode(PIN_RTC_32K, INPUT);
+  Wire.begin();
+  rtc.begin();
+  rtc.disableAlarm(DS3231_ALARM_1);
+  rtc.disableAlarm(DS3231_ALARM_2);
+  rtc.clearAlarm(DS3231_ALARM_1);
+  rtc.clearAlarm(DS3231_ALARM_2);
+  rtc.writeSqwPinMode(DS3231_OFF);
   syncClock();
 }
 
@@ -252,7 +279,7 @@ void loop() {
     String rsp;
     if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
       epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
-      millisRef = millis();
+      rtc.adjust(DateTime(epochNow));
 #if defined(SERIAL_DEBUG)
       Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
 #endif
