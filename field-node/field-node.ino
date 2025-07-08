@@ -1,279 +1,182 @@
 /**********************************************************************
- *  SOIL-MOISTURE  FIELD NODE – Arduino Nano Classic  (DEBUG VERSION)
- *  -----------------------------------------------------------------
- *  • Teros-12 on D2  (SDI-12)
- *  • RFM95 LoRa      CS D10, RST D9, DIO0→D3 (INT1)
- *  • Samples exactly on every Unix multiple of SLOT_SECONDS (600 s)
- *  • DS3231 RTC keeps real time
- *  • Radio sleeps during every MCU watchdog nap
- *  • Retries up to 10 unsent records if ACK not received
- *  • **First slot after boot skips the node-offset delay**
-*********************************************************************/
+ *  SOIL-MOISTURE  FIELD NODE – Arduino Nano Classic  (DEBUG + DS3231)
+ *  ------------------------------------------------------------------
+ *  • Teros-12 → D2      • RFM95 → CS D10, RST D9, DIO0 D3
+ *  • DS3231 RTC keeps time
+ *  • Expects exactly one  "ACKTIME:<epoch32>"  response
+ *********************************************************************/
+
 #include <SPI.h>
+#include <Wire.h>
 #include <RH_RF95.h>
 #include <SDI12.h>
 #include <LowPower.h>
 #include <RTClib.h>
 #include <inttypes.h>
 
-/* ---------------- console output ---------------- */
-#define SERIAL_DEBUG                               // comment to silence
+#define SERIAL_DEBUG
+constexpr uint8_t NODE_ID = 1;
 
-/* ---------------- user settings ----------------- */
-constexpr uint8_t NODE_ID       = 1;              // 1‒4 unique per probe
+/* ---- pins ---- */
+constexpr uint8_t PIN_LORA_CS  = 10;
+constexpr uint8_t PIN_LORA_RST = 9;
+constexpr uint8_t PIN_LORA_INT = 3;
+constexpr uint8_t PIN_SDILINE  = 2;
+constexpr uint8_t PIN_LBO      = A0;
 
-/* ---------------- pin map ----------------------- */
-constexpr uint8_t PIN_LORA_CS   = 10;
-constexpr uint8_t PIN_LORA_RST  = 9;
-constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
-constexpr uint8_t PIN_SDILINE   = 2;
-constexpr uint8_t PIN_LBO       = A0;             // battery monitor (direct battery +)
-constexpr uint8_t PIN_RTC_INT   = 8;              // DS3231 SQW/INT
+/* ---- timing ---- */
+constexpr uint16_t SLOT_SECONDS = 1800;
 
-/* ---------------- timing ------------------------ */
-constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
+/* ---- LoRa ---- */
+constexpr float  LORA_FREQ_MHZ = 915.0;
+constexpr int8_t LORA_TX_PWR   = 13;
 
-/* ---------------- LoRa parameters --------------- */
-constexpr float    LORA_FREQ_MHZ = 915.0;
-constexpr int8_t   LORA_TX_PWR   = 13;
-
-/* ---------------- objects ----------------------- */
-RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
-SDI12   sdi(PIN_SDILINE);
+/* ---- objects ---- */
+RH_RF95  rf95(PIN_LORA_CS, PIN_LORA_INT);
+SDI12    sdi(PIN_SDILINE);
 RTC_DS3231 rtc;
 
-/* ---------------- globals ----------------------- */
-volatile uint32_t epochNow = 0;                   // Unix seconds
-bool firstSlot = true;                            // ← skip offset once
-
-/* ---- resend buffer ---- */
-struct PendingRec {
-  uint32_t ts;
-  String   data;
-  float    batt;
-};
-
+/* ---- globals ---- */
+volatile uint32_t epochNow = 0; bool firstSlot = true;
+struct PendingRec{uint32_t ts; String data; float batt;};
 constexpr uint8_t MAX_BACKLOG = 10;
-PendingRec backlog[MAX_BACKLOG];
-uint8_t backlogCount = 0;                         // number of unsent records
+PendingRec backlog[MAX_BACKLOG]; uint8_t backlogCount = 0;
 
-/* ================ helper functions ============== */
-void sleepSeconds_raw(uint16_t sec) {
-  while (sec >= 8) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); sec -= 8; }
-  if (sec >= 4)  { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); sec -= 4; }
-  if (sec >= 2)  { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); sec -= 2; }
-  if (sec >= 1)  { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); }
+/* ---------- helpers ------------------------------------------------ */
+inline void reinitI2C(){ Wire.begin(); TWCR=_BV(TWEN); }
+
+void sleepSeconds_raw(uint16_t s){
+  while(s>=8){ LowPower.powerDown(SLEEP_8S,ADC_OFF,BOD_OFF); s-=8; }
+  if(s>=4){ LowPower.powerDown(SLEEP_4S,ADC_OFF,BOD_OFF); s-=4; }
+  if(s>=2){ LowPower.powerDown(SLEEP_2S,ADC_OFF,BOD_OFF); s-=2; }
+  if(s>=1)  LowPower.powerDown(SLEEP_1S,ADC_OFF,BOD_OFF);
 }
 
-void announceSleep(const __FlashStringHelper *why, uint32_t sec,
-                   bool radioSleep, bool wakeAfter = true) {
+void announceSleep(const __FlashStringHelper* why,uint32_t sec,
+                   bool radioSleep,bool wakeAfter=true)
+{
 #if defined(SERIAL_DEBUG)
-  Serial.print(F("  Sleeping ")); Serial.print(sec);
-  Serial.print(F(" s  ("));       Serial.print(why); Serial.println(F(")"));
-  Serial.flush();
+  Serial.print(F("  Sleeping ")); Serial.print(sec); Serial.print(F(" s ("));
+  Serial.print(why); Serial.println(')'); Serial.flush();
 #endif
-  if (radioSleep) rf95.sleep();
-  sleepSeconds_raw(static_cast<uint16_t>(sec));
-  if (radioSleep && wakeAfter) rf95.setModeRx();
-  epochNow = rtc.now().unixtime();
+  if(radioSleep) rf95.sleep();
+  sleepSeconds_raw((uint16_t)sec);
+  if(radioSleep&&wakeAfter) rf95.setModeRx();
+  reinitI2C(); epochNow=rtc.now().unixtime();
 }
 
-void deepSleepForever() {
+[[gnu::noreturn]] void deepSleepForever(){
 #if defined(SERIAL_DEBUG)
-  Serial.println(F("  Entering deep sleep – reset required"));
+  Serial.println(F("  Deep sleep – reset needed")); Serial.flush();
 #endif
   rf95.sleep();
-  for (;;) {
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  }
+  for(;;) LowPower.powerDown(SLEEP_FOREVER,ADC_OFF,BOD_OFF);
 }
 
-/* ---- LoRa helpers ---- */
-void loraSend(const char *msg) {
+/* ---- LoRa TX (double wait) ---- */
+void loraSend(const char* msg){
 #if defined(SERIAL_DEBUG)
-  Serial.print(F("  → ")); Serial.println(msg);
+  Serial.print(F("  → ")); Serial.println(msg); Serial.flush();
 #endif
-  rf95.setModeIdle();                         // wake radio if asleep
-  rf95.send(reinterpret_cast<const uint8_t*>(msg), strlen(msg));
-  rf95.waitPacketSent();
+  rf95.setModeIdle();
+  rf95.send((uint8_t*)msg,strlen(msg));
+  rf95.waitPacketSent(); rf95.waitPacketSent();   // ensure on-air complete
   rf95.setModeRx();
 }
 
-bool loraWait(String &out, uint16_t ms) {
-  uint32_t t0 = millis();
-  while (millis() - t0 < ms) {
-    if (rf95.available()) {
-      uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
-      uint8_t buf[RH_RF95_MAX_MESSAGE_LEN + 1];
-      if (rf95.recv(buf, &len)) {
-        for (uint8_t i = 0; i < len; ++i)
-          buf[i] = (buf[i] >= 32 && buf[i] <= 126) ? buf[i] : '?';
-        buf[len] = '\0';
-        out = reinterpret_cast<char*>(buf);
+/* ---- robust RX ---- */
+bool loraWaitFor(String& out,const char* key,uint16_t ms){
+  uint32_t t0=millis();
+  while(millis()-t0<ms){
+    if(!rf95.available()){ delay(4); continue; }
+    uint8_t len=RH_RF95_MAX_MESSAGE_LEN, buf[RH_RF95_MAX_MESSAGE_LEN];
+    if(!rf95.recv(buf,&len)||len==0) continue;
+    String msg; uint8_t i=0;
+    while(i<len&&(buf[i]<32||buf[i]>126)) ++i;
+    for(; i<len; ++i) msg+=char((buf[i]>=32&&buf[i]<=126)?buf[i]:'?');
 #if defined(SERIAL_DEBUG)
-        Serial.print(F("  ← ")); Serial.println(out);
+    Serial.print(F("  ← ")); Serial.println(msg); Serial.flush();
 #endif
-        return true;
-      }
-    }
-    delay(4);
+    if(msg.indexOf(key)>=0){ out=msg; return true; }
   }
-#if defined(SERIAL_DEBUG)
-  Serial.println(F("  …timeout"));
-#endif
   return false;
 }
 
-/* ---- Teros-12 read ---- */
-String readTeros() {
-#if defined(SERIAL_DEBUG)
-  Serial.println(F("  Starting Teros measurement"));
-#endif
-  sdi.begin(); delay(100);
-  sdi.sendCommand("0M!");  delay(1500);
-  sdi.clearBuffer();
-  sdi.sendCommand("0D0!"); delay(60);
-  String line = sdi.readString(); line.trim();
-  for (size_t i = 0; i < line.length(); ++i)
-    if (line[i] < 32 || line[i] > 126) line[i] = '?';
+/* ---- Teros read ---- */
+String readTeros(){
+  sdi.begin(); delay(100); sdi.sendCommand("0M!"); delay(1500);
+  sdi.clearBuffer();       sdi.sendCommand("0D0!"); delay(60);
+  String l=sdi.readString(); l.trim();
+  for(char &c:l) if(c<32||c>126) c='?';
   sdi.end();
-#if defined(SERIAL_DEBUG)
-  Serial.print(F("  Teros raw: ")); Serial.println(line);
-#endif
-  return line;
+  return l;
 }
 
-/* ---- read battery via analog pin ---- */
-float readBattery() {
-  const uint8_t SAMPLES = 8;
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < SAMPLES; ++i) {
-    sum += analogRead(PIN_LBO);
-  }
-  float raw = sum / static_cast<float>(SAMPLES);
-  float v = raw * (5.0 / 1023.0);
-  if (v < 0.5) v = 0.0;
-#if defined(SERIAL_DEBUG)
-  Serial.print(F("  Battery: ")); Serial.print(v); Serial.println(F(" V"));
-#endif
-  return v;
+/* ---- battery ---- */
+float readBattery(){
+  uint32_t sum=0; for(uint8_t i=0;i<8;++i) sum+=analogRead(PIN_LBO);
+  float v=(sum/8.0)*(5.0/1023.0); if(v<0.5) v=0.0; return v;
 }
 
 /* ---- initial clock sync ---- */
-void syncClock() {
-  char req[] = "REQT:X"; req[5] = '0' + NODE_ID;
-  loraSend(req);
-  String pkt;
-  if (loraWait(pkt, 5000) && pkt.startsWith("TIME:")) {
-    epochNow  = strtoul(pkt.c_str() + 5, nullptr, 10);
-    rtc.adjust(DateTime(epochNow));
-#if defined(SERIAL_DEBUG)
-    Serial.print(F("  Clock set to ")); Serial.println(epochNow);
-#endif
+void syncClock(){
+  char req[]="REQT:X"; req[5]='0'+NODE_ID; loraSend(req);
+  String p; if(loraWaitFor(p,"TIME:",5000)){
+    uint32_t ts=strtoul(p.c_str()+p.indexOf("TIME:")+5,nullptr,10);
+    epochNow=ts; rtc.adjust(DateTime(ts));
   }
 }
 
-/* ============================ SETUP ============================== */
-void setup() {
-  Serial.begin(115200);
-  delay(150);
-  Serial.println(F("--------------------------------------------"));
-  Serial.print  (F("Node ")); Serial.println(NODE_ID);
-
-  pinMode(PIN_LORA_RST, OUTPUT);
-  digitalWrite(PIN_LORA_RST, LOW);  delay(10);
-  digitalWrite(PIN_LORA_RST, HIGH); delay(10);
-  rf95.init();
-  rf95.setFrequency(LORA_FREQ_MHZ);
-  rf95.setTxPower(LORA_TX_PWR, false);
-  rf95.setModeRx();
-  Serial.print(F("LoRa ready on ")); Serial.print(LORA_FREQ_MHZ); Serial.println(F(" MHz"));
-
-  pinMode(PIN_SDILINE, INPUT_PULLUP);
-  pinMode(PIN_LBO, INPUT);
-  pinMode(PIN_RTC_INT, INPUT_PULLUP);
-  rtc.begin();
+/* ============================ SETUP ============================ */
+void setup(){
+  Serial.begin(115200); Wire.begin(); delay(120);
+  pinMode(PIN_LORA_RST,OUTPUT); digitalWrite(PIN_LORA_RST,LOW); delay(10);
+  digitalWrite(PIN_LORA_RST,HIGH); delay(10);
+  rf95.init(); rf95.setFrequency(LORA_FREQ_MHZ); rf95.setTxPower(LORA_TX_PWR,false);
+  rf95.setModeRx(); rtc.begin(); rtc.disable32K(); rtc.writeSqwPinMode(DS3231_OFF);
   syncClock();
 }
 
-/* ============================= LOOP ============================== */
-void loop() {
-  epochNow = rtc.now().unixtime();
-  if (epochNow == 0) { delay(250); return; }
+/* ============================= LOOP ============================ */
+void loop(){
+  epochNow=rtc.now().unixtime(); if(!epochNow){ delay(250); return; }
 
-  static uint32_t lastSlot = 0;
-  uint32_t slotIdx = epochNow / SLOT_SECONDS;
+  static uint32_t lastSlot=0; uint32_t slotIdx=epochNow/SLOT_SECONDS;
+  if(slotIdx==lastSlot) goto nap; lastSlot=slotIdx;
 
-  if (slotIdx != lastSlot) {                      // *** new slot
-    lastSlot = slotIdx;
-#if defined(SERIAL_DEBUG)
-    Serial.print(F("\n=== slot ")); Serial.print(slotIdx);
-    Serial.print(F("  (epoch ")); Serial.print(epochNow); Serial.println(F(") ==="));
-#endif
-    /* 1. measure */
-    float  batt    = readBattery();
-    String reading = readTeros();
-    epochNow = rtc.now().unixtime();
+  /* 1. measure */
+  float batt=readBattery();
+  String reading=readTeros();
+  epochNow=rtc.now().unixtime();
+  if(backlogCount<MAX_BACKLOG) backlog[backlogCount++]={epochNow,reading,batt};
 
-    if (backlogCount < MAX_BACKLOG) {
-      backlog[backlogCount].ts   = epochNow;
-      backlog[backlogCount].data = reading;
-      backlog[backlogCount].batt = batt;
-      backlogCount++;
-    }
+  /* 2. node-offset */
+  if(!firstSlot) announceSleep(F("node offset"),45*NODE_ID,true,true);
+  else firstSlot=false;
 
-    /* 2. node-offset nap (skip on first slot) */
-    if (firstSlot) {
-#if defined(SERIAL_DEBUG)
-      Serial.println(F("  First slot → skip node offset"));
-#endif
-      firstSlot = false;
-    } else {
-      uint16_t offset = 45 * NODE_ID;        // 30 s for node-1
-      announceSleep(F("node offset"), offset, true, true);
-    }
-
-    /* 3. TX */
-    String msg = String(F("DATA:")) + NODE_ID + ',';
-    for (uint8_t i = 0; i < backlogCount; ++i) {
-      if (i > 0) msg += '|';
-      msg += backlog[i].ts;
-      msg += ',';
-      msg += backlog[i].data;
-      msg += ',';
-      msg += String(backlog[i].batt, 2);
-    }
-
-    char pkt[240];
-    msg.toCharArray(pkt, sizeof(pkt));
-    loraSend(pkt);
-
-    /* 4. ACK wait */
-    String rsp;
-    if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
-      epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
-      rtc.adjust(DateTime(epochNow));
-#if defined(SERIAL_DEBUG)
-      Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
-#endif
-      for (uint8_t i = 0; i < backlogCount; ++i) {
-        backlog[i].data = "";
-        backlog[i].batt = 0;
-      }
-      backlogCount = 0;
-    } else {
-#if defined(SERIAL_DEBUG)
-      Serial.println(F("  ! ACK missing"));
-#endif
-      if (backlogCount >= MAX_BACKLOG) {
-        deepSleepForever();
-      }
-    }
-    epochNow = rtc.now().unixtime();
+  /* 3. build + TX */
+  String out=F("DATA:"); out+=NODE_ID; out+=',';
+  for(uint8_t i=0;i<backlogCount;++i){
+    if(i) out+='|'; out+=backlog[i].ts; out+=','; out+=backlog[i].data;
+    out+=','; out+=String(backlog[i].batt,2);
   }
+  char pkt[240]; out.toCharArray(pkt,sizeof(pkt)); loraSend(pkt);
 
-  /* 5. long nap until next slot */
-  uint32_t nextSlot = (slotIdx + 1) * SLOT_SECONDS;
-  if (nextSlot > epochNow)
-    announceSleep(F("until next slot"), nextSlot - epochNow, true, false);
+  /* 4. ACK wait */
+  String rsp; uint32_t t0=millis(); bool ok=false;
+  while(millis()-t0<12000UL){
+    if(!loraWaitFor(rsp,"ACK",1500)) break;
+    int colon=rsp.indexOf(':');
+    if(colon>0){ uint32_t ts=strtoul(rsp.c_str()+colon+1,nullptr,10);
+      if(ts>1600000000UL){ epochNow=ts; rtc.adjust(DateTime(ts)); }
+      ok=true; break;
+    }
+    ok=true;       // short “ACK” is still acceptable
+  }
+  if(ok) backlogCount=0;
+  else if(backlogCount>=MAX_BACKLOG) deepSleepForever();
+
+nap:
+  uint32_t next=(slotIdx+1)*SLOT_SECONDS;
+  if(next>epochNow) announceSleep(F("until next slot"),next-epochNow,true,false);
 }
