@@ -15,33 +15,33 @@
 #include <inttypes.h>
 
 /* ---------------- console output ---------------- */
-#define SERIAL_DEBUG                               // comment to silence
+#define SERIAL_DEBUG
 
 /* ---------------- user settings ----------------- */
-constexpr uint8_t NODE_ID       = 1;              // 1‒4 unique per probe
+constexpr uint8_t NODE_ID       = 1;
 
 /* ---------------- pin map ----------------------- */
 constexpr uint8_t PIN_LORA_CS   = 10;
 constexpr uint8_t PIN_LORA_RST  = 9;
-constexpr uint8_t PIN_LORA_INT  = 3;              // INT1
+constexpr uint8_t PIN_LORA_INT  = 3;
 constexpr uint8_t PIN_SDILINE   = 2;
-constexpr uint8_t PIN_LBO       = A0;             // battery monitor (direct battery +)
+constexpr uint8_t PIN_LBO       = A0;
 
 /* ---------------- timing ------------------------ */
-constexpr uint16_t SLOT_SECONDS = 1800;            // 30-minute slots
+constexpr uint16_t SLOT_SECONDS = 1800; // 30 Minute Unix Slots
 
 /* ---------------- LoRa parameters --------------- */
 constexpr float    LORA_FREQ_MHZ = 915.0;
-constexpr int8_t   LORA_TX_PWR   = 13;
+constexpr int8_t   LORA_TX_PWR   = 13; // dB (20 Max)
 
 /* ---------------- objects ----------------------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SDI12   sdi(PIN_SDILINE);
 
 /* ---------------- globals ----------------------- */
-volatile uint32_t epochNow = 0;                   // Unix seconds
+volatile uint32_t epochNow = 0; // Unix seconds
 uint32_t millisRef = 0;
-bool firstSlot = true;                            // ← skip offset once
+bool firstSlot = true; // First slot after boot, skip Node_ID offset time (broadcast instantly)
 
 /* ---- resend buffer ---- */
 struct PendingRec {
@@ -95,10 +95,10 @@ void loraSend(const char *msg) {
 #if defined(SERIAL_DEBUG)
   Serial.print(F("  → ")); Serial.println(msg);
 #endif
-  rf95.setModeIdle();                         // wake radio if asleep
+  rf95.setModeIdle(); // Waking LoRa Module if sleeping
   rf95.send(reinterpret_cast<const uint8_t*>(msg), strlen(msg));
   rf95.waitPacketSent();
-  rf95.setModeRx();
+  rf95.setModeRx(); // Set to listen immediately after TX for acknowledgement
 }
 
 bool loraWait(String &out, uint16_t ms) {
@@ -131,11 +131,15 @@ String readTeros() {
 #if defined(SERIAL_DEBUG)
   Serial.println(F("  Starting Teros measurement"));
 #endif
-  sdi.begin(); delay(100);
-  sdi.sendCommand("0M!");  delay(1500);
+  sdi.begin();
+  delay(100);
+  sdi.sendCommand("0M!"); // Take a measurement
+  delay(1500);
   sdi.clearBuffer();
-  sdi.sendCommand("0D0!"); delay(60);
-  String line = sdi.readString(); line.trim();
+  sdi.sendCommand("0D0!"); // Give the measurement
+  delay(60);
+  String line = sdi.readString(); // Pack the measurement
+  line.trim();
   for (size_t i = 0; i < line.length(); ++i)
     if (line[i] < 32 || line[i] > 126) line[i] = '?';
   sdi.end();
@@ -183,13 +187,17 @@ void setup() {
   Serial.print  (F("Node ")); Serial.println(NODE_ID);
 
   pinMode(PIN_LORA_RST, OUTPUT);
-  digitalWrite(PIN_LORA_RST, LOW);  delay(10);
-  digitalWrite(PIN_LORA_RST, HIGH); delay(10);
+  digitalWrite(PIN_LORA_RST, LOW);
+  delay(10);
+  digitalWrite(PIN_LORA_RST, HIGH);
+  delay(10);
   rf95.init();
   rf95.setFrequency(LORA_FREQ_MHZ);
   rf95.setTxPower(LORA_TX_PWR, false);
   rf95.setModeRx();
-  Serial.print(F("LoRa ready on ")); Serial.print(LORA_FREQ_MHZ); Serial.println(F(" MHz"));
+  Serial.print(F("LoRa ready on "));
+  Serial.print(LORA_FREQ_MHZ);
+  Serial.println(F(" MHz"));
 
   pinMode(PIN_SDILINE, INPUT_PULLUP);
   pinMode(PIN_LBO, INPUT);
@@ -199,12 +207,15 @@ void setup() {
 /* ============================= LOOP ============================== */
 void loop() {
   tickWhileAwake();
-  if (epochNow == 0) { delay(250); return; }
+  if (epochNow == 0)] {
+    delay(250);
+    return;
+  }
 
   static uint32_t lastSlot = 0;
   uint32_t slotIdx = epochNow / SLOT_SECONDS;
 
-  if (slotIdx != lastSlot) {                      // *** new slot
+  if (slotIdx != lastSlot) {
     lastSlot = slotIdx;
 #if defined(SERIAL_DEBUG)
     Serial.print(F("\n=== slot ")); Serial.print(slotIdx);
@@ -229,7 +240,7 @@ void loop() {
 #endif
       firstSlot = false;
     } else {
-      uint16_t offset = 45 * NODE_ID;        // 30 s for node-1
+      uint16_t offset = 45 * NODE_ID; // 45s for Node 1
       announceSleep(F("node offset"), offset, true, true);
     }
 

@@ -17,26 +17,23 @@
 #include <RH_RF95.h>
 #include <sys/time.h>
 #include <time.h>
-#include <inttypes.h>              // PRIu32
+#include <inttypes.h>
 
 /* -------- pin map (NodeMCU v3) -------- */
-constexpr uint8_t PIN_LORA_CS   = D8;    // GPIO15
-constexpr uint8_t PIN_LORA_INT  = D1;    // GPIO5
-constexpr uint8_t PIN_LORA_RST  = D0;    // GPIO16
+constexpr uint8_t PIN_LORA_CS   = D8;
+constexpr uint8_t PIN_LORA_INT  = D1;
+constexpr uint8_t PIN_LORA_RST  = D0;
 
-constexpr uint8_t PIN_SD_CS     = D4;    // GPIO2
-constexpr uint8_t PIN_SD_CD     = D2;    // GPIO4  (LOW = card present)
-constexpr uint8_t PIN_SD_LED    = D3;    // GPIO0  (ON = SD busy)
-constexpr uint8_t PIN_LBO       = A0;    // battery monitor (direct battery +)
+constexpr uint8_t PIN_SD_CS     = D4;
+constexpr uint8_t PIN_SD_CD     = D2;
+constexpr uint8_t PIN_SD_LED    = D3;
+constexpr uint8_t PIN_LBO       = A0;
 
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
-constexpr int8_t  LORA_TX_PWR   = 13;    // dBm
+constexpr int8_t  LORA_TX_PWR   = 13; // dB (20 Max)
 
 /* -------- ThingSpeak -------- */
-// Each node logs to its own channel. Set the Write API key for
-// every node (1–4). Leave the placeholders as-is if a channel is
-// not configured for that node.
 const char* THINGSPEAK_API_KEYS[4] = {
   "QNMD4ONWVWQH0RCM",
   "SMWCSSYAD3OA4Z9T",
@@ -47,17 +44,16 @@ const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
 
 /* -------- globals -------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
-SdFat   sd;
-// SD logger no longer keeps the file open persistently
+SdFat sd;
 WiFiUDP ntpUDP;
 
 /* -------- tiny NTP helper -------- */
-const uint32_t NTP2UNIX = 2'208'988'800UL;      // 1900‒>1970 offset
+const uint32_t NTP2UNIX = 2'208'988'800UL; // 1900‒>1970 offset
 
 bool getNtpEpoch(uint32_t &utc32)
 {
   uint8_t pkt[48] = {};
-  pkt[0] = 0b11100011;                           // LI=3, VN=4, Mode=3 (client)
+  pkt[0] = 0b11100011; // LI=3, VN=4, Mode=3 (client)
 
   ntpUDP.begin(0);
   if (!ntpUDP.beginPacket("pool.ntp.org", 123)) return false;
@@ -65,7 +61,7 @@ bool getNtpEpoch(uint32_t &utc32)
   ntpUDP.endPacket();
 
   const uint32_t t0 = millis();
-  while (millis() - t0 < 2000) {                 // 2-s timeout
+  while (millis() - t0 < 2000) { // 2-s timeout
     if (ntpUDP.parsePacket() == 48) {
       ntpUDP.read(pkt, 48);
       uint32_t secs = (pkt[40] << 24) | (pkt[41] << 16) |
@@ -82,7 +78,7 @@ bool getNtpEpoch(uint32_t &utc32)
 
 /* -------- epoch helpers -------- */
 inline uint32_t nowEpoch32() {
-  return static_cast<uint32_t>(time(nullptr));   // fits until Y2038
+  return static_cast<uint32_t>(time(nullptr)); // fits until Y2038
 }
 inline void setEpoch32(uint32_t e) {
   timeval tv{ static_cast<time_t>(e), 0 };
@@ -113,10 +109,10 @@ void iso8601Utc(char *out, size_t len, uint32_t epoch);
 bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
 {
   if (WiFi.status() != WL_CONNECTED) return false;
-  if (nodeId == 0 || nodeId > 4) return false;          // only nodes 1–4 supported
+  if (nodeId == 0 || nodeId > 4) return false; // only nodes 1–4 supported
 
   const char* apiKey = THINGSPEAK_API_KEYS[nodeId - 1];
-  if (!apiKey || !*apiKey) return false;                // skip if no key configured
+  if (!apiKey || !*apiKey) return false; // skip if no key configured
 
   String p(payload);
   p.replace("\r", "");
@@ -125,12 +121,12 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
   // payload looks like "<raw values>,<battery>" where raw values are
   // separated with '+' (or commas on some sensors)
   int lastComma = p.lastIndexOf(',');
-  if (lastComma < 0) return false;                // malformed payload
+  if (lastComma < 0) return false; // malformed payload
 
   String battery = p.substring(lastComma + 1);
   String raw     = p.substring(0, lastComma);
 
-  char d = raw.indexOf(',') >= 0 ? ',' : '+';    // prefer comma if present
+  char d = raw.indexOf(',') >= 0 ? ',' : '+'; // prefer comma if present
 
   String parts[4];
   uint8_t count = 0;
@@ -141,10 +137,11 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
     parts[count++] = raw.substring(start, sep);
     start = sep + 1;
   }
-  parts[count++] = battery;                      // 4th field is battery
+  parts[count++] = battery; // 4th field is battery
 
   WiFiClient client;
   HTTPClient http;
+
   if (!http.begin(client, String(THINGSPEAK_HOST) + "/update.json")) return false;
   http.addHeader("Content-Type", "application/json");
 
@@ -257,23 +254,29 @@ void sendEpochTo(uint8_t dest)
 void setup()
 {
   Serial.begin(115200);
-  Serial.println(WiFi.macAddress());
   delay(200);
 
   /* LoRa */
   pinMode(PIN_LORA_RST, OUTPUT);
-  digitalWrite(PIN_LORA_RST, LOW);  delay(10);
-  digitalWrite(PIN_LORA_RST, HIGH); delay(10);
-  if (!rf95.init()) { Serial.println(F("LoRa init FAIL")); while (true); }
+  digitalWrite(PIN_LORA_RST, LOW);
+  delay(10);
+  digitalWrite(PIN_LORA_RST, HIGH);
+  delay(10);
+  if (!rf95.init()) {
+    Serial.println(F("LoRa init FAIL"));
+    while (true);
+  }
   rf95.setFrequency(LORA_FREQ_MHZ);
   rf95.setTxPower(LORA_TX_PWR, false);
   Serial.println(F("LoRa ready"));
   logEvent("BOOT", 0, nowEpoch32());
 
   /* SD */
-  pinMode(PIN_SD_CS, OUTPUT);  digitalWrite(PIN_SD_CS, HIGH);
-  pinMode(PIN_SD_LED, OUTPUT); digitalWrite(PIN_SD_LED, LOW);
-  pinMode(PIN_SD_CD, INPUT_PULLUP);            // LOW = card present
+  pinMode(PIN_SD_CS, OUTPUT);
+  digitalWrite(PIN_SD_CS, HIGH);
+  pinMode(PIN_SD_LED, OUTPUT);
+  digitalWrite(PIN_SD_LED, LOW);
+  pinMode(PIN_SD_CD, INPUT_PULLUP);
   pinMode(PIN_LBO, INPUT);
   digitalWrite(PIN_SD_LED, HIGH);
   if (sd.begin(PIN_SD_CS, SD_SCK_MHZ(25))) {
@@ -291,7 +294,7 @@ void setup()
 
   /* Wi-Fi → NTP (one-shot) */
   WiFi.mode(WIFI_STA);
-  WiFi.begin("MSetup");                       // open AP
+  WiFi.begin("MSetup");
   Serial.print(F("Wi-Fi…"));
   uint32_t w0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - w0 < 15'000) {
@@ -326,16 +329,16 @@ void loop()
       String pkt(reinterpret_cast<char*>(buf));
       Serial.printf("← %s\n", pkt.c_str());
 
-      if (pkt.startsWith("REQT:")) {                         // time request
+      if (pkt.startsWith("REQT:")) { // time request
         uint8_t id = pkt.substring(5).toInt();
         logEvent("REQT", id, nowEpoch32());
         sendEpochTo(id);
 
-      } else if (pkt.startsWith("DATA:")) {                  // sensor data
+      } else if (pkt.startsWith("DATA:")) { // sensor data
         int comma = pkt.indexOf(',');
         uint8_t nodeId = pkt.substring(5, comma).toInt();
 
-        String records = pkt.substring(comma + 1);  // "epoch,data[|epoch,data]"
+        String records = pkt.substring(comma + 1); // "epoch,data[|epoch,data]"
         int start = 0;
         while (start < records.length()) {
           int sep = records.indexOf('|', start);
