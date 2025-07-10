@@ -207,7 +207,7 @@ void setup() {
 /* ============================= LOOP ============================== */
 void loop() {
   tickWhileAwake();
-  if (epochNow == 0)] {
+  if (epochNow == 0) {
     delay(250);
     return;
   }
