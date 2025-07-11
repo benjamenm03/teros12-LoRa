@@ -31,7 +31,7 @@ constexpr uint8_t PIN_LBO       = A0;
 
 /* -------- radio -------- */
 constexpr float   LORA_FREQ_MHZ = 915.0;
-constexpr int8_t  LORA_TX_PWR   = 13; // dB (20 Max)
+constexpr int8_t  LORA_TX_PWR   = 20; // dB (20 Max)
 
 /* -------- ThingSpeak -------- */
 const char* THINGSPEAK_API_KEYS[4] = {

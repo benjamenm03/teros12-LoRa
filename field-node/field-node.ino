@@ -32,7 +32,7 @@ constexpr uint16_t SLOT_SECONDS = 1800; // 30 Minute Unix Slots
 
 /* ---------------- LoRa parameters --------------- */
 constexpr float    LORA_FREQ_MHZ = 915.0;
-constexpr int8_t   LORA_TX_PWR   = 13; // dB (20 Max)
+constexpr int8_t   LORA_TX_PWR   = 20; // dB (20 Max)
 
 /* ---------------- objects ----------------------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
