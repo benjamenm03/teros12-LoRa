@@ -13,6 +13,7 @@
 #include <SDI12.h>
 #include <LowPower.h>
 #include <inttypes.h>
+#include <avr/wdt.h>
 
 /* ---------------- console output ---------------- */
 #define SERIAL_DEBUG
@@ -53,6 +54,7 @@ struct PendingRec {
 constexpr uint8_t MAX_BACKLOG = 10;
 PendingRec backlog[MAX_BACKLOG];
 uint8_t backlogCount = 0;                         // number of unsent records
+uint8_t failStreak   = 0;                         // consecutive TX failures
 
 /* ================ helper functions ============== */
 void tickWhileAwake() {
@@ -272,10 +274,16 @@ void loop() {
         backlog[i].batt = 0;
       }
       backlogCount = 0;
+      failStreak = 0;
     } else {
 #if defined(SERIAL_DEBUG)
       Serial.println(F("  ! ACK missing"));
 #endif
+      failStreak++;
+      if (failStreak >= 2) {
+        wdt_enable(WDTO_15MS);
+        while (true) {}
+      }
       if (backlogCount >= MAX_BACKLOG) {
         deepSleepForever();
       }
