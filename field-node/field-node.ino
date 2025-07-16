@@ -273,7 +273,7 @@ void loop() {
       msg += String(backlog[i].batt, 2);
     }
 
-    char pkt[240];
+    char pkt[480];
     msg.toCharArray(pkt, sizeof(pkt));
 
     bool gotAck = false;
