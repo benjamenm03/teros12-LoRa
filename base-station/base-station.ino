@@ -335,10 +335,16 @@ void loop()
         sendEpochTo(id);
 
       } else if (pkt.startsWith("DATA:")) { // sensor data
+        if (!pkt.endsWith("!")) {
+          Serial.println(F("! DATA without terminator"));
+          return;
+        }
+        pkt.remove(pkt.length() - 1); // drop '!'
+
         int comma = pkt.indexOf(',');
         uint8_t nodeId = pkt.substring(5, comma).toInt();
 
-        String records = pkt.substring(comma + 1); // "epoch,data[|epoch,data]"
+        String records = pkt.substring(comma + 1); // "epoch,data[|epoch,data]!"
         int start = 0;
         while (start < records.length()) {
           int sep = records.indexOf('|', start);
@@ -351,7 +357,6 @@ void loop()
           if (sep == -1) break; else start = sep + 1;
         }
 
-        delay(5000);
         char ack[28];
         snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
         rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));

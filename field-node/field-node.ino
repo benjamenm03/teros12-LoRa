@@ -12,6 +12,7 @@
 #include <RH_RF95.h>
 #include <SDI12.h>
 #include <LowPower.h>
+#include <avr/wdt.h>
 #include <inttypes.h>
 
 /* ---------------- console output ---------------- */
@@ -53,6 +54,7 @@ struct PendingRec {
 constexpr uint8_t MAX_BACKLOG = 10;
 PendingRec backlog[MAX_BACKLOG];
 uint8_t backlogCount = 0;                         // number of unsent records
+uint8_t failCount    = 0;                         // consecutive TX failures
 
 /* ================ helper functions ============== */
 void tickWhileAwake() {
@@ -88,6 +90,15 @@ void deepSleepForever() {
   for (;;) {
     LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
   }
+}
+
+[[noreturn]] void softwareReset() {
+#if defined(SERIAL_DEBUG)
+  Serial.println(F("  Software reset"));
+  Serial.flush();
+#endif
+  wdt_enable(WDTO_15MS);
+  while (true) { }
 }
 
 /* ---- LoRa helpers ---- */
@@ -244,7 +255,7 @@ void loop() {
       announceSleep(F("node offset"), offset, true, true);
     }
 
-    /* 3. TX */
+    /* 3. TX – packets end with '!' */
     String msg = String(F("DATA:")) + NODE_ID + ',';
     for (uint8_t i = 0; i < backlogCount; ++i) {
       if (i > 0) msg += '|';
@@ -254,6 +265,7 @@ void loop() {
       msg += ',';
       msg += String(backlog[i].batt, 2);
     }
+    msg += '!';
 
     char pkt[240];
     msg.toCharArray(pkt, sizeof(pkt));
@@ -264,6 +276,7 @@ void loop() {
     if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
       epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
       millisRef = millis();
+      failCount = 0;
 #if defined(SERIAL_DEBUG)
       Serial.print(F("  Clock corrected to ")); Serial.println(epochNow);
 #endif
@@ -276,8 +289,13 @@ void loop() {
 #if defined(SERIAL_DEBUG)
       Serial.println(F("  ! ACK missing"));
 #endif
+      failCount++;
+      syncClock();
+      if (failCount >= 3) {
+        softwareReset();
+      }
       if (backlogCount >= MAX_BACKLOG) {
-        deepSleepForever();
+        softwareReset();
       }
     }
     tickWhileAwake();
