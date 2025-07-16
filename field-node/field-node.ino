@@ -6,6 +6,8 @@
  *  • Samples exactly on every Unix multiple of SLOT_SECONDS (600 s)
  *  • Radio sleeps during every MCU watchdog nap
  *  • Retries up to 10 unsent records if ACK not received
+ *  • Soft reset when backlog is full
+ *  • Basic CAD collision avoidance & random offset jitter
  *  • **First slot after boot skips the node-offset delay**
 *********************************************************************/
 #include <SPI.h>
@@ -13,6 +15,7 @@
 #include <SDI12.h>
 #include <LowPower.h>
 #include <inttypes.h>
+#include <avr/wdt.h>
 
 /* ---------------- console output ---------------- */
 #define SERIAL_DEBUG
@@ -33,6 +36,9 @@ constexpr uint16_t SLOT_SECONDS = 1800; // 30 Minute Unix Slots
 /* ---------------- LoRa parameters --------------- */
 constexpr float    LORA_FREQ_MHZ = 915.0;
 constexpr int8_t   LORA_TX_PWR   = 20; // dB (20 Max)
+
+constexpr uint8_t  TX_RETRY_COUNT   = 3;  // resend attempts per slot
+constexpr uint8_t  OFFSET_JITTER_S  = 4;  // random node offset jitter
 
 /* ---------------- objects ----------------------- */
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
@@ -90,12 +96,22 @@ void deepSleepForever() {
   }
 }
 
+void softReset() {
+#if defined(SERIAL_DEBUG)
+  Serial.println(F("  Performing soft reset"));
+#endif
+  wdt_enable(WDTO_15MS);
+  while (true) { }
+}
+
 /* ---- LoRa helpers ---- */
 void loraSend(const char *msg) {
 #if defined(SERIAL_DEBUG)
   Serial.print(F("  → ")); Serial.println(msg);
 #endif
   rf95.setModeIdle(); // Waking LoRa Module if sleeping
+  delay(random(0, 200));           // small random jitter
+  rf95.waitCAD();                  // collision avoidance
   rf95.send(reinterpret_cast<const uint8_t*>(msg), strlen(msg));
   rf95.waitPacketSent();
   rf95.setModeRx(); // Set to listen immediately after TX for acknowledgement
@@ -199,6 +215,8 @@ void setup() {
   Serial.print(LORA_FREQ_MHZ);
   Serial.println(F(" MHz"));
 
+  randomSeed(analogRead(PIN_LBO));
+
   pinMode(PIN_SDILINE, INPUT_PULLUP);
   pinMode(PIN_LBO, INPUT);
   syncClock();
@@ -240,7 +258,7 @@ void loop() {
 #endif
       firstSlot = false;
     } else {
-      uint16_t offset = 45 * NODE_ID; // 45s for Node 1
+      uint16_t offset = 45 * NODE_ID + random(OFFSET_JITTER_S + 1);
       announceSleep(F("node offset"), offset, true, true);
     }
 
@@ -257,11 +275,19 @@ void loop() {
 
     char pkt[240];
     msg.toCharArray(pkt, sizeof(pkt));
-    loraSend(pkt);
 
-    /* 4. ACK wait */
+    bool gotAck = false;
     String rsp;
-    if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
+    for (uint8_t attempt = 0; attempt < TX_RETRY_COUNT && !gotAck; ++attempt) {
+      loraSend(pkt);
+      if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
+        gotAck = true;
+      } else if (attempt + 1 < TX_RETRY_COUNT) {
+        delay(random(400, 1000));
+      }
+    }
+
+    if (gotAck) {
       epochNow  = strtoul(rsp.c_str() + 8, nullptr, 10);
       millisRef = millis();
 #if defined(SERIAL_DEBUG)
@@ -277,7 +303,7 @@ void loop() {
       Serial.println(F("  ! ACK missing"));
 #endif
       if (backlogCount >= MAX_BACKLOG) {
-        deepSleepForever();
+        softReset();
       }
     }
     tickWhileAwake();

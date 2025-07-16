@@ -243,6 +243,7 @@ void sendEpochTo(uint8_t dest)
   uint32_t now32 = nowEpoch32();
   snprintf(msg, sizeof(msg), "TIME:%" PRIu32, now32);
 
+  rf95.waitCAD();
   rf95.send(reinterpret_cast<uint8_t*>(msg), strlen(msg));
   rf95.waitPacketSent();
 
@@ -354,6 +355,7 @@ void loop()
         delay(5000);
         char ack[28];
         snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
+        rf95.waitCAD();
         rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
         rf95.waitPacketSent();
         Serial.printf("→ %s\n", ack);
