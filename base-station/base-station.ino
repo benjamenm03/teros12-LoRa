@@ -352,7 +352,7 @@ void loop()
           if (sep == -1) break; else start = sep + 1;
         }
 
-        delay(5000);
+        delay(1000);
         char ack[28];
         snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
         rf95.waitCAD();
