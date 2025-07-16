@@ -210,6 +210,11 @@ void setup() {
 void loop() {
   tickWhileAwake();
   if (epochNow == 0) {
+    static uint32_t lastSync = 0;
+    if (millis() - lastSync >= 10000) {
+      syncClock();
+      lastSync = millis();
+    }
     delay(250);
     return;
   }

@@ -245,6 +245,7 @@ void sendEpochTo(uint8_t dest)
 
   rf95.send(reinterpret_cast<uint8_t*>(msg), strlen(msg));
   rf95.waitPacketSent();
+  rf95.setModeRx();
 
   Serial.printf("→ %s\n", msg);
   logEvent("TIME", dest, now32);
@@ -338,11 +339,12 @@ void loop()
         int comma = pkt.indexOf(',');
         uint8_t nodeId = pkt.substring(5, comma).toInt();
 
-        char ack[28];
-        snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
-        rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
-        rf95.waitPacketSent();
-        Serial.printf("→ %s\n", ack);
+  char ack[28];
+  snprintf(ack, sizeof(ack), "ACKTIME:%" PRIu32, nowEpoch32());
+  rf95.send(reinterpret_cast<uint8_t*>(ack), strlen(ack));
+  rf95.waitPacketSent();
+  rf95.setModeRx();
+  Serial.printf("→ %s\n", ack);
 
         String records = pkt.substring(comma + 1); // "epoch,data[|epoch,data]"
         int start = 0;
