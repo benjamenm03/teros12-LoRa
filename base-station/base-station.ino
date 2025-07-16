@@ -253,6 +253,8 @@ void sendEpochTo(uint8_t dest)
 /* ======================  SETUP  ====================== */
 void setup()
 {
+  setenv("TZ", "UTC0", 1); // force UTC time
+  tzset();
   Serial.begin(115200);
   delay(200);
 
