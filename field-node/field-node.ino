@@ -280,7 +280,7 @@ void loop() {
     String rsp;
     for (uint8_t attempt = 0; attempt < TX_RETRY_COUNT && !gotAck; ++attempt) {
       loraSend(pkt);
-      if (loraWait(rsp, 10000) && rsp.startsWith("ACKTIME:")) {
+      if (loraWait(rsp, 15000) && rsp.startsWith("ACKTIME:")) {
         gotAck = true;
       } else if (attempt + 1 < TX_RETRY_COUNT) {
         delay(random(400, 1000));
