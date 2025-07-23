@@ -46,6 +46,8 @@ const char* THINGSPEAK_HOST    = "http://api.thingspeak.com";
 RH_RF95 rf95(PIN_LORA_CS, PIN_LORA_INT);
 SdFat sd;
 WiFiUDP ntpUDP;
+constexpr uint32_t DATA_TIMEOUT_SEC = 6UL * 3600; // reboot after 6 h w/o data
+uint32_t lastDataEpoch = 0;
 
 /* -------- tiny NTP helper -------- */
 const uint32_t NTP2UNIX = 2'208'988'800UL; // 1900‒>1970 offset
@@ -316,6 +318,8 @@ void setup()
     Serial.println(F("! Wi-Fi failed – unsynced clock"));
     logEvent("NOWIFI", 0, nowEpoch32());
   }
+
+  lastDataEpoch = nowEpoch32();
 }
 
 /* ======================  LOOP  ====================== */
@@ -360,7 +364,13 @@ void loop()
         rf95.waitPacketSent();
         Serial.printf("→ %s\n", ack);
         logEvent("DATA", nodeId, nowEpoch32());
+        lastDataEpoch = nowEpoch32();
       }
     }
+  }
+
+  if (nowEpoch32() - lastDataEpoch >= DATA_TIMEOUT_SEC) {
+    logEvent("NODATA", 0, nowEpoch32());
+    ESP.restart();
   }
 }
