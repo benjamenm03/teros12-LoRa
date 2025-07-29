@@ -92,6 +92,14 @@ void deepSleepForever() {
   }
 }
 
+void forceReboot() {
+#if defined(SERIAL_DEBUG)
+  Serial.println(F("  Forcing reboot"));
+#endif
+  wdt_enable(WDTO_15MS);
+  while (true) {}
+}
+
 /* ---- LoRa helpers ---- */
 void loraSend(const char *msg) {
 #if defined(SERIAL_DEBUG)
@@ -195,6 +203,7 @@ void setup() {
   delay(10);
   rf95.init();
   rf95.setFrequency(LORA_FREQ_MHZ);
+  rf95.setModemConfig(RH_RF95::Bw125Cr48Sf4096); // longest range
   rf95.setTxPower(LORA_TX_PWR, false);
   rf95.setModeRx();
   Serial.print(F("LoRa ready on "));
@@ -228,12 +237,13 @@ void loop() {
     String reading = readTeros();
     tickWhileAwake();
 
-    if (backlogCount < MAX_BACKLOG) {
-      backlog[backlogCount].ts   = epochNow;
-      backlog[backlogCount].data = reading;
-      backlog[backlogCount].batt = batt;
-      backlogCount++;
+    if (backlogCount >= MAX_BACKLOG) {
+      forceReboot();
     }
+    backlog[backlogCount].ts   = epochNow;
+    backlog[backlogCount].data = reading;
+    backlog[backlogCount].batt = batt;
+    backlogCount++;
 
     /* 2. node-offset nap (skip on first slot) */
     if (firstSlot) {
@@ -285,7 +295,7 @@ void loop() {
         while (true) {}
       }
       if (backlogCount >= MAX_BACKLOG) {
-        deepSleepForever();
+        forceReboot();
       }
     }
     tickWhileAwake();
