@@ -108,7 +108,8 @@ float readBattery() {
 void iso8601Utc(char *out, size_t len, uint32_t epoch);
 
 /* -------- ThingSpeak uploader -------- */
-bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
+bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch,
+                         const char* payload, int16_t rssi, int snr)
 {
   if (WiFi.status() != WL_CONNECTED) return false;
   if (nodeId == 0 || nodeId > 4) return false; // only nodes 1–4 supported
@@ -157,6 +158,8 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
   if (count >= 2) body += String(",\"field2\":\"") + parts[1] + '"';
   if (count >= 3) body += String(",\"field3\":\"") + parts[2] + '"';
   if (count >= 4) body += String(",\"field4\":\"") + parts[3] + '"';
+  body += String(",\"field5\":\"") + rssi + '"';
+  body += String(",\"field6\":\"") + snr + '"';
   body += '}';
 
   int code = http.POST(body);
@@ -166,7 +169,8 @@ bool sendCsvToThingSpeak(uint8_t nodeId, uint32_t sampleEpoch, const char* paylo
 }
 
 /* -------- SD logger -------- */
-void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
+void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload,
+             int16_t rssi, int snr)
 {
   digitalWrite(PIN_SD_LED, HIGH);
   FsFile f = sd.open("/soil.csv", O_CREAT | O_WRITE | O_APPEND);
@@ -184,13 +188,15 @@ void logCsv(uint8_t nodeId, uint32_t sampleEpoch, const char* payload)
   f.print(sampleEpoch); f.print(',');
   f.print(battery);    f.print(',');
   f.print(nodeId);     f.print(',');
+  f.print(rssi);       f.print(',');
+  f.print(snr);        f.print(',');
   f.println(rest);
   f.sync();
   f.close();
   digitalWrite(PIN_SD_LED, LOW);
 
   // also send to ThingSpeak if Wi-Fi is available
-  sendCsvToThingSpeak(nodeId, sampleEpoch, payload);
+  sendCsvToThingSpeak(nodeId, sampleEpoch, payload, rssi, snr);
 }
 
 /* -------- ISO-8601 UTC formatter -------- */
@@ -270,6 +276,7 @@ void setup()
     while (true);
   }
   rf95.setFrequency(LORA_FREQ_MHZ);
+  rf95.setModemConfig(RH_RF95::Bw125Cr48Sf4096); // longest range
   rf95.setTxPower(LORA_TX_PWR, false);
   Serial.println(F("LoRa ready"));
   logEvent("BOOT", 0, nowEpoch32());
@@ -330,6 +337,8 @@ void loop()
     uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
     uint8_t buf[RH_RF95_MAX_MESSAGE_LEN + 1];
     if (rf95.recv(buf, &len)) {
+      int16_t rssi = rf95.lastRssi();
+      int snr = rf95.lastSNR();
       buf[len] = '\0';
       String pkt(reinterpret_cast<char*>(buf));
       Serial.printf("← %s\n", pkt.c_str());
@@ -352,7 +361,7 @@ void loop()
           int c2 = rec.indexOf(',');
           uint32_t ts = rec.substring(0, c2).toInt();
           String data = rec.substring(c2 + 1);
-          logCsv(nodeId, ts, data.c_str());
+          logCsv(nodeId, ts, data.c_str(), rssi, snr);
           if (sep == -1) break; else start = sep + 1;
         }
 

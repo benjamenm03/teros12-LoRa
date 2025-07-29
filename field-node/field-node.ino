@@ -195,6 +195,7 @@ void setup() {
   delay(10);
   rf95.init();
   rf95.setFrequency(LORA_FREQ_MHZ);
+  rf95.setModemConfig(RH_RF95::Bw125Cr48Sf4096); // longest range
   rf95.setTxPower(LORA_TX_PWR, false);
   rf95.setModeRx();
   Serial.print(F("LoRa ready on "));
@@ -228,12 +229,16 @@ void loop() {
     String reading = readTeros();
     tickWhileAwake();
 
-    if (backlogCount < MAX_BACKLOG) {
-      backlog[backlogCount].ts   = epochNow;
-      backlog[backlogCount].data = reading;
-      backlog[backlogCount].batt = batt;
-      backlogCount++;
+    if (backlogCount >= MAX_BACKLOG) {
+      for (uint8_t j = 1; j < backlogCount; ++j) {
+        backlog[j-1] = backlog[j];
+      }
+      backlogCount = MAX_BACKLOG - 1;
     }
+    backlog[backlogCount].ts   = epochNow;
+    backlog[backlogCount].data = reading;
+    backlog[backlogCount].batt = batt;
+    backlogCount++;
 
     /* 2. node-offset nap (skip on first slot) */
     if (firstSlot) {
@@ -285,7 +290,11 @@ void loop() {
         while (true) {}
       }
       if (backlogCount >= MAX_BACKLOG) {
-        deepSleepForever();
+        // drop the oldest record instead of sleeping forever
+        for (uint8_t j = 1; j < backlogCount; ++j) {
+          backlog[j-1] = backlog[j];
+        }
+        backlogCount = MAX_BACKLOG - 1;
       }
     }
     tickWhileAwake();
