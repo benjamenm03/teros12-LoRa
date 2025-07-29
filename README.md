@@ -38,3 +38,11 @@ reflects when the measurement was taken rather than when it was uploaded.
 6. `field6` – SNR of the LoRa packet in dB
 
 Additional payload values, if present, are uploaded to subsequent fields after `field6`.
+
+## Resend backlog
+
+Field nodes maintain a small memory buffer of unsent readings. Every LoRa
+transmission includes all backlog records so that intermittent radio outages do
+not lose data. A successful `ACKTIME` response from the base station clears the
+backlog. If the buffer grows beyond 10 measurements the node forcibly reboots in
+an attempt to recover connectivity.
