@@ -92,6 +92,14 @@ void deepSleepForever() {
   }
 }
 
+void forceReboot() {
+#if defined(SERIAL_DEBUG)
+  Serial.println(F("  Forcing reboot"));
+#endif
+  wdt_enable(WDTO_15MS);
+  while (true) {}
+}
+
 /* ---- LoRa helpers ---- */
 void loraSend(const char *msg) {
 #if defined(SERIAL_DEBUG)
@@ -230,10 +238,7 @@ void loop() {
     tickWhileAwake();
 
     if (backlogCount >= MAX_BACKLOG) {
-      for (uint8_t j = 1; j < backlogCount; ++j) {
-        backlog[j-1] = backlog[j];
-      }
-      backlogCount = MAX_BACKLOG - 1;
+      forceReboot();
     }
     backlog[backlogCount].ts   = epochNow;
     backlog[backlogCount].data = reading;
@@ -290,11 +295,7 @@ void loop() {
         while (true) {}
       }
       if (backlogCount >= MAX_BACKLOG) {
-        // drop the oldest record instead of sleeping forever
-        for (uint8_t j = 1; j < backlogCount; ++j) {
-          backlog[j-1] = backlog[j];
-        }
-        backlogCount = MAX_BACKLOG - 1;
+        forceReboot();
       }
     }
     tickWhileAwake();
